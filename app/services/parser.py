@@ -1,5 +1,5 @@
 from __future__ import annotations
-"""Parse different file types into the unified DocumentNode structure."""
+"""把不同格式的文档解析成统一的 DocumentNode 结构。"""
 
 import io
 import logging
@@ -47,6 +47,7 @@ class PdfImageRegion:
 class BaseParser(ABC):
     @abstractmethod
     def parse(self, file_bytes: bytes, filename: str) -> list[DocumentNode]:
+        """解析原始文件内容并返回标准节点。"""
         raise NotImplementedError
 
 
@@ -55,6 +56,7 @@ class TxtMarkdownParser(BaseParser):
     list_re = re.compile(r"^(\s*(?:[-*+]|\d+[.)]))\s+(.+)$")
 
     def parse(self, file_bytes: bytes, filename: str) -> list[DocumentNode]:
+        """解析 TXT 和 Markdown，保留标题、列表、表格和段落结构。"""
         text = file_bytes.decode("utf-8", errors="ignore")
         lines = text.splitlines(keepends=True)
         nodes: list[DocumentNode] = []
@@ -199,6 +201,7 @@ class TxtMarkdownParser(BaseParser):
 
 class DocxParser(BaseParser):
     def parse(self, file_bytes: bytes, filename: str) -> list[DocumentNode]:
+        """解析 Word 文档中的标题、正文和表格。"""
         doc = DocxDocument(io.BytesIO(file_bytes))
         nodes: list[DocumentNode] = []
         for p in doc.paragraphs:
@@ -255,6 +258,7 @@ class PdfParser(BaseParser):
         self.visual_analyzer = VisualDocumentAnalyzer()
 
     def parse(self, file_bytes: bytes, filename: str) -> list[DocumentNode]:
+        """优先走 PDF 版面解析，再按需补局部图片视觉解析。"""
         nodes: list[DocumentNode] = []
         if fitz is not None:
             nodes = self._extract_with_pymupdf(file_bytes, filename)

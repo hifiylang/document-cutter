@@ -1,5 +1,5 @@
 from __future__ import annotations
-"""Rule -> similarity -> LLM gray-zone boundary decision engine."""
+"""规则、相似度和 LLM 灰区兜底组成的边界决策引擎。"""
 
 from app.core.config import settings
 from app.core.metrics import BOUNDARY_DECISION_COUNTER
@@ -16,6 +16,7 @@ class BoundaryDecisionEngine:
         self.llm_refiner = LlmBoundaryRefiner()
 
     def refine_blocks(self, blocks: list[list[DocumentNode]], options: ChunkOptions) -> list[list[DocumentNode]]:
+        """按相邻块逐个做边界裁决，并把结果元信息写回节点。"""
         if not blocks:
             return []
         refined: list[list[DocumentNode]] = []
@@ -41,6 +42,7 @@ class BoundaryDecisionEngine:
         return refined
 
     def should_merge(self, left_block: list[DocumentNode], right_block: list[DocumentNode], options: ChunkOptions) -> dict[str, object]:
+        """返回两个相邻块是否合并，以及本次裁决策略。"""
         base = {"merge": False, "strategy": "rule_block", "similarity_score": None}
         if not self._eligible(left_block, right_block, options):
             self._record(base)
@@ -59,7 +61,7 @@ class BoundaryDecisionEngine:
             return fallback
 
         try:
-            score = self.similarity_scorer.score(left_text, right_text)
+            score = self.similarity_scorer.score(left_text, right_text, options)
             if score >= settings.similarity_high_threshold:
                 result = {"merge": True, "strategy": "similarity_high", "similarity_score": round(score, 4)}
                 self._record(result)
@@ -86,6 +88,7 @@ class BoundaryDecisionEngine:
             return base
 
     def _eligible(self, left_block: list[DocumentNode], right_block: list[DocumentNode], options: ChunkOptions) -> bool:
+        """只允许同章节、非标题、非表格且预算允许的块进入增强链路。"""
         if not left_block or not right_block:
             return False
         left_types = {node.node_type for node in left_block}

@@ -1,5 +1,5 @@
 from __future__ import annotations
-"""Public request/response schemas and the internal document node model."""
+"""对外请求响应模型，以及内部统一节点模型。"""
 
 from typing import Any, Literal
 
@@ -10,7 +10,7 @@ NodeType = Literal["title", "paragraph", "table", "list", "unknown"]
 
 
 class DocumentNode(BaseModel):
-    """Unified intermediate node produced by every parser."""
+    """所有解析器统一产出的中间节点。"""
 
     node_id: str
     node_type: NodeType
@@ -21,7 +21,7 @@ class DocumentNode(BaseModel):
 
 
 class Chunk(BaseModel):
-    """Public chunk payload returned by the service."""
+    """服务对外返回的标准切分结果。"""
 
     chunk_id: str
     text: str
@@ -33,11 +33,14 @@ class Chunk(BaseModel):
 
 
 class ChunkResponse(BaseModel):
+    """文档切分接口的完整响应。"""
+
     document_id: str
     filename: str
     total_nodes: int
     total_chunks: int
     chunks: list[Chunk]
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class HealthResponse(BaseModel):
@@ -45,7 +48,7 @@ class HealthResponse(BaseModel):
 
 
 class ChunkOptions(BaseModel):
-    """Token-first chunking options used by the pipeline."""
+    """主链路使用的 token-first 切分参数。"""
 
     target_chunk_tokens: int = Field(default=300, ge=50)
     min_chunk_tokens: int = Field(default=100, ge=1)
@@ -54,6 +57,9 @@ class ChunkOptions(BaseModel):
     overlap_tokens: int = Field(default=0, ge=0)
     similarity_enabled: bool = True
     llm_enabled: bool = False
+    embedding_base_url: str | None = None
+    embedding_model: str | None = None
+    embedding_api_key: str | None = None
 
 
 class ChunkByUrlRequest(BaseModel):

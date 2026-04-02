@@ -5,14 +5,10 @@ from app.models.schemas import DocumentNode
 
 
 class SemanticSegmenter:
-    """
-    Preserve natural document boundaries and attach section paths.
-    """
-
-    def __init__(self) -> None:
-        pass
+    """保留自然结构边界，并给节点补齐章节路径。"""
 
     def segment(self, nodes: list[DocumentNode]) -> list[list[DocumentNode]]:
+        """把节点切成粗粒度结构块，供后续 token 合并和拆分使用。"""
         if not nodes:
             return []
 

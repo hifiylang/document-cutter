@@ -1,5 +1,5 @@
 from __future__ import annotations
-"""Token-aware recursive splitter for oversized chunk candidates."""
+"""面向超长候选块的递归拆分器。"""
 
 from dataclasses import dataclass
 import math
@@ -24,12 +24,14 @@ class ChunkSplitter:
         self.token_counter = token_counter
 
     def split(self, blocks: list[list[DocumentNode]], options: ChunkOptions) -> list[list[DocumentNode]]:
+        """逐块检查预算，必要时做递归拆分。"""
         result: list[list[DocumentNode]] = []
         for block in blocks:
             result.extend(self._split_block(block, options))
         return result
 
     def _split_block(self, block: list[DocumentNode], options: ChunkOptions) -> list[list[DocumentNode]]:
+        """单块拆分入口，优先保留结构边界。"""
         if not block:
             return []
         if self._fits_budget(block, options):
@@ -40,6 +42,7 @@ class ChunkSplitter:
         return self._split_multi_node(block, options)
 
     def _split_single_node(self, node: DocumentNode, options: ChunkOptions) -> list[list[DocumentNode]]:
+        """拆单个长段落或长列表，并补齐位置偏移信息。"""
         spans = self._recursive_split_text(node.text, options, depth=0, base_offset=0)
         spans = self._pack_spans(spans, options)
         chunks: list[list[DocumentNode]] = []
@@ -97,6 +100,7 @@ class ChunkSplitter:
         return packed
 
     def _split_multi_node(self, block: list[DocumentNode], options: ChunkOptions) -> list[list[DocumentNode]]:
+        """多节点块优先按节点边界装箱，实在超限再下钻到单节点拆分。"""
         parts: list[list[DocumentNode]] = []
         current: list[DocumentNode] = []
         current_tokens = 0
@@ -130,6 +134,7 @@ class ChunkSplitter:
         return sum(self.token_counter.count(node.text) for node in block if node.text)
 
     def _recursive_split_text(self, text: str, options: ChunkOptions, depth: int, base_offset: int) -> list[TextSpan]:
+        """按分隔符优先级递归拆文本，尽量避免在奇怪位置硬切。"""
         normalized = text.strip()
         if not normalized:
             return []
@@ -185,7 +190,7 @@ class ChunkSplitter:
         return spans
 
     def _hard_split(self, text: str, options: ChunkOptions, base_offset: int) -> list[TextSpan]:
-        # Final fallback: estimate a character window from the token budget and shrink until it fits.
+        # 最后的兜底方案：先估一个字符窗口，再持续收缩到满足预算。
         spans: list[TextSpan] = []
         approx_max_chars = max(32, options.max_chunk_tokens * 6)
         start = 0

@@ -13,7 +13,7 @@ except Exception:  # pragma: no cover
 
 
 class ModelClient:
-    """OpenAI 兼容模型调用封装。"""
+    """兼容 OpenAI 风格接口的模型调用封装。"""
 
     def __init__(self) -> None:
         self.enabled = bool(OpenAI and settings.openai_api_key)
@@ -70,7 +70,7 @@ class ModelClient:
         return response.choices[0].message.content or ""
 
     def _apply_thinking(self, kwargs: dict[str, Any], enable_thinking: bool) -> None:
-        # 默认不传 thinking/reasoning，只有调用方明确打开时才附加。
+        # 默认不传思考参数，只有调用方明确打开时才附加。
         if not enable_thinking:
             return
         extra_body = dict(kwargs.get("extra_body") or {})

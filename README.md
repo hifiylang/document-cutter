@@ -87,6 +87,7 @@ uvicorn app.main:app --reload
 - `CUTTER_SIMILARITY_HIGH_THRESHOLD`
 - `CUTTER_SIMILARITY_LOW_THRESHOLD`
 - `CUTTER_EMBEDDING_BASE_URL`
+- `CUTTER_EMBEDDING_API_KEY`
 - `CUTTER_EMBEDDING_MODEL`
 - `CUTTER_EMBEDDING_TIMEOUT_SECONDS`
 
@@ -114,7 +115,7 @@ uvicorn app.main:app --reload
 
 ## 模型角色
 
-当前代码把模型职责统一成三类：
+当前代码把模型职责统一成四类：
 
 - `text_model`
   - 通用文本模型
@@ -124,11 +125,15 @@ uvicorn app.main:app --reload
 - `flash_model`
   - 负责简单高频文本任务
   - 当前主要用于相邻 chunk 的边界 merge / keep 裁决
+- `embedding_model`
+  - 负责相邻文本块的语义相似度计算
+  - 当前由 embedding 服务接口消费
 
 当前绑定关系：
 
 - `VisualDocumentAnalyzer` 使用 `CUTTER_VISION_MODEL`
 - `LlmBoundaryRefiner` 优先使用 `CUTTER_FLASH_MODEL`
+- `SemanticSimilarityScorer` 使用 `CUTTER_EMBEDDING_MODEL`
 - 如果没有单独配置 `CUTTER_FLASH_MODEL`，边界裁决会自动回退到 `CUTTER_TEXT_MODEL`
 
 ## 模型调用封装
@@ -150,14 +155,17 @@ uvicorn app.main:app --reload
 
 ## Volcengine Ark 接入示例
 
-如果使用火山引擎 Ark 的 OpenAI 兼容接口，可以这样配置：
+如果使用兼容 OpenAI 风格的模型服务，可以这样配置：
 
 ```env
-CUTTER_OPENAI_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
+CUTTER_OPENAI_BASE_URL=https://<your-llm-service>/v1
 CUTTER_OPENAI_API_KEY=你的 API Key
 CUTTER_TEXT_MODEL=你的通用文本 endpoint id
 CUTTER_FLASH_MODEL=你的轻量文本 endpoint id
 CUTTER_VISION_MODEL=你的视觉 endpoint id
+CUTTER_EMBEDDING_BASE_URL=http://<your-embedding-service>/v1/embeddings
+CUTTER_EMBEDDING_API_KEY=你的 embedding 服务 key
+CUTTER_EMBEDDING_MODEL=你的 embedding 模型名
 ```
 
 推荐分工：
@@ -165,6 +173,16 @@ CUTTER_VISION_MODEL=你的视觉 endpoint id
 - `CUTTER_FLASH_MODEL`：简单边界裁决、小文本任务
 - `CUTTER_VISION_MODEL`：OCR、图片理解、PDF 图片区域提取
 - `CUTTER_TEXT_MODEL`：后续复杂文本任务
+- `CUTTER_EMBEDDING_MODEL`：相似度打分
+
+embedding 服务当前支持：
+
+- 地址接入
+- 可选 `Bearer` key 认证
+- 模型名或模型 endpoint 透传
+- 单次请求覆盖 `.env` 默认配置
+- 上传接口和 URL 接口都支持覆盖传参
+- 响应里会返回本次实际生效的选择
 
 ## 接口示例
 
@@ -174,7 +192,9 @@ CUTTER_VISION_MODEL=你的视觉 endpoint id
 curl -X POST "http://127.0.0.1:8000/v1/chunk/by-upload" \
   -F "file=@sample.pdf" \
   -F "max_chunk_tokens=450" \
-  -F "overlap_tokens=24"
+  -F "overlap_tokens=24" \
+  -F "embedding_base_url=http://<your-embedding-service>/v1/embeddings" \
+  -F "embedding_model=<your-embedding-model>"
 ```
 
 ### 2. 按 URL 切分
@@ -182,7 +202,7 @@ curl -X POST "http://127.0.0.1:8000/v1/chunk/by-upload" \
 ```bash
 curl -X POST "http://127.0.0.1:8000/v1/chunk/by-url" \
   -H "Content-Type: application/json" \
-  -d "{\"document_url\":\"https://example.com/demo.pdf\",\"filename\":\"demo.pdf\",\"options\":{\"max_chunk_tokens\":450,\"overlap_tokens\":24}}"
+  -d "{\"document_url\":\"https://example.com/demo.pdf\",\"filename\":\"demo.pdf\",\"options\":{\"max_chunk_tokens\":450,\"overlap_tokens\":24,\"embedding_base_url\":\"http://<your-embedding-service>/v1/embeddings\",\"embedding_model\":\"<your-embedding-model>\"}}"
 ```
 
 ## 返回结构
@@ -194,6 +214,7 @@ curl -X POST "http://127.0.0.1:8000/v1/chunk/by-url" \
 - `total_nodes`
 - `total_chunks`
 - `chunks`
+- `metadata.selected_options`
 
 每个 `chunk` 至少包含：
 
@@ -221,6 +242,7 @@ curl -X POST "http://127.0.0.1:8000/v1/chunk/by-url" \
 
 - `char_count` 现在只是输出统计信息，不参与切分预算
 - 真正的预算控制完全由 token 配置决定
+- `metadata.selected_options` 会显示本次请求实际使用的 embedding 路径、embedding 模型、flash 模型和视觉模型
 
 ## 切分策略
 

@@ -1,5 +1,5 @@
 from __future__ import annotations
-"""Merge undersized chunks inside the same structural section."""
+"""在同一结构章节内合并过短的候选块。"""
 
 from app.models.schemas import ChunkOptions, DocumentNode
 from app.services.token_counter import TokenCounter
@@ -10,6 +10,7 @@ class ChunkMerger:
         self.token_counter = token_counter
 
     def merge(self, blocks: list[list[DocumentNode]], options: ChunkOptions) -> list[list[DocumentNode]]:
+        """把明显过短的块补齐到前一个同章节块里。"""
         if not blocks:
             return []
 
@@ -31,6 +32,7 @@ class ChunkMerger:
         return merged
 
     def _can_merge(self, left: list[DocumentNode], right: list[DocumentNode], options: ChunkOptions) -> bool:
+        """判断右侧块是否适合并入左侧块。"""
         if self._section_path(left) != self._section_path(right):
             return False
         left_type = self._chunk_type(left)

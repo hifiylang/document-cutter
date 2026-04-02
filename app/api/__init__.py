@@ -1,2 +1,1 @@
-# API package for document cutter.
-"""HTTP 路由层。"""
+"""接口路由层。"""

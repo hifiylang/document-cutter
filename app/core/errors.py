@@ -5,7 +5,7 @@ from fastapi import HTTPException, status
 
 
 class DocumentCutterError(Exception):
-    """Base error for document cutter failures."""
+    """文档切分服务的基础异常。"""
 
 
 class UnsupportedFileTypeError(DocumentCutterError):

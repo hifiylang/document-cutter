@@ -1,5 +1,5 @@
 from __future__ import annotations
-"""Token counting abstraction used by the chunking core."""
+"""切分内核使用的统一 token 计数抽象。"""
 
 import math
 import time
@@ -11,13 +11,14 @@ from app.core.metrics import TOKEN_COUNT_COUNTER, TOKEN_COUNT_DURATION
 
 
 class TokenCounter:
-    """Unified token counting entry point with local and remote providers."""
+    """统一 token 计数入口，支持本地估算和远程服务。"""
 
     def __init__(self) -> None:
         self.provider = settings.token_counter_provider.lower()
         self.endpoint = settings.token_counter_endpoint
 
     def count(self, text: str) -> int:
+        """对输入文本做 token 计数。"""
         normalized = text.strip()
         if not normalized:
             return 0
@@ -40,6 +41,7 @@ class TokenCounter:
         return result
 
     def _count_by_http(self, text: str) -> int:
+        """调用远程 token 计数服务。"""
         payload = {"input": text}
         with httpx.Client(timeout=settings.token_counter_timeout_seconds) as client:
             response = client.post(self.endpoint, json=payload)
@@ -54,5 +56,5 @@ class TokenCounter:
         raise ValueError("token counter response missing token count")
 
     def _count_by_heuristic(self, text: str) -> int:
-        # Heuristic fallback keeps chunk budgeting stable without extra dependencies.
+        # 启发式估算不依赖额外模型服务，适合作为默认兜底。
         return max(1, math.ceil(len(text) / 4))

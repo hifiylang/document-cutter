@@ -1,5 +1,5 @@
 from __future__ import annotations
-"""Composable chunking core used by the document pipeline."""
+"""供主流水线调用的可组合切分内核。"""
 
 from app.models.schemas import ChunkOptions, DocumentNode
 from app.services.boundary import BoundaryDecisionEngine
@@ -10,7 +10,7 @@ from app.services.token_counter import TokenCounter
 
 
 class TextChunker:
-    """Pure chunking core: structure split -> merge -> recursive split -> boundary refine."""
+    """纯切分内核：结构切分 -> 短块合并 -> 递归拆分 -> 边界增强。"""
 
     def __init__(self, token_counter: TokenCounter) -> None:
         self.segmenter = SemanticSegmenter()
@@ -19,6 +19,7 @@ class TextChunker:
         self.boundary_engine = BoundaryDecisionEngine(token_counter)
 
     def chunk(self, nodes: list[DocumentNode], options: ChunkOptions) -> list[list[DocumentNode]]:
+        """把标准节点切成最终用于序列化的块。"""
         blocks = self.segmenter.segment(nodes)
         blocks = self.merger.merge(blocks, options)
         blocks = self.splitter.split(blocks, options)

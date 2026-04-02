@@ -19,7 +19,6 @@ class LlmBoundaryRefiner:
         self.enabled = bool(settings.llm_enabled and settings.openai_api_key)
         self.client = ModelClient() if self.enabled else None
         # 简单文本任务优先走 flash 小模型；如果没单独配置，再回退到文本模型。
-        self.text_model = settings.text_model
         self.flash_model = settings.flash_model or settings.text_model
 
     def decide_merge(self, left_text: str, right_text: str) -> bool:
@@ -36,7 +35,7 @@ class LlmBoundaryRefiner:
                 system_prompt=prompt,
                 user_payload=payload,
                 temperature=0.1,
-                # flash 小模型默认不开启 thinking/reasoning。
+                # flash 小模型默认不开启深度思考模式。
                 enable_thinking=False,
             )
             result = json.loads(raw)

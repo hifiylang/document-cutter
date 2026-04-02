@@ -1,5 +1,5 @@
 from __future__ import annotations
-"""日志初始化，保证每条日志都能带上 request_id。"""
+"""日志初始化，保证每条日志都能带上请求标识。"""
 
 import contextvars
 import logging

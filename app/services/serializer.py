@@ -1,5 +1,5 @@
 from __future__ import annotations
-"""Serialize internal chunk blocks into the public ChunkResponse schema."""
+"""把内部块结果序列化成对外统一的 ChunkResponse。"""
 
 import uuid
 from pathlib import Path
@@ -14,7 +14,13 @@ class ChunkSerializer:
     def __init__(self, token_counter: TokenCounter) -> None:
         self.token_counter = token_counter
 
-    def serialize(self, filename: str, blocks: list[list[DocumentNode]]) -> ChunkResponse:
+    def serialize(
+        self,
+        filename: str,
+        blocks: list[list[DocumentNode]],
+        response_metadata: dict[str, object] | None = None,
+    ) -> ChunkResponse:
+        """聚合块级元信息，并输出最终响应结构。"""
         chunks: list[Chunk] = []
         parser_type = Path(filename).suffix.lower().lstrip(".") or "text"
         for block in blocks:
@@ -67,6 +73,7 @@ class ChunkSerializer:
             total_nodes=sum(len(block) for block in blocks),
             total_chunks=len(chunks),
             chunks=chunks,
+            metadata=response_metadata or {},
         )
 
     def _section_path(self, block: list[DocumentNode]) -> list[str]:
