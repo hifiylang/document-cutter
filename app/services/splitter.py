@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-import re
 
 from app.core.metrics import OVERLAP_COUNTER, RECURSIVE_SPLIT_DEPTH
 from app.models.schemas import ChunkOptions, DocumentNode
@@ -27,15 +26,15 @@ class ChunkSplitter:
         "\n\n",
         "\n",
         "\t",
-        "。 ",
-        "！ ",
-        "？ ",
+        "。",
+        "！",
+        "？",
         ". ",
         "! ",
         "? ",
-        "； ",
+        "；",
         "; ",
-        "， ",
+        "，",
         ", ",
         " ",
         "-",
@@ -120,11 +119,31 @@ class ChunkSplitter:
         return packed
 
     def _split_multi_node(self, block: list[DocumentNode], options: ChunkOptions) -> list[list[DocumentNode]]:
-        """多节点块优先按节点边界装箱，实在超限再下钻到单节点拆分。"""
+        """多节点块优先按节点边界装箱，避免把标题重新拆成独立块。"""
+
+        title_nodes, content_nodes = self._extract_leading_titles(block)
+        if not content_nodes:
+            return [[node.model_copy(deep=True) for node in block]]
+
+        if len(content_nodes) == 1 and content_nodes[0].node_type in {"paragraph", "list"} and not self._fits_single_node(content_nodes[0], options):
+            parts = self._split_single_node(content_nodes[0], options)
+        else:
+            parts = self._pack_nodes(content_nodes, options)
+
+        if title_nodes and parts:
+            first_part = [node.model_copy(deep=True) for node in title_nodes]
+            first_part.extend(parts[0])
+            parts[0] = first_part
+
+        return parts
+
+    def _pack_nodes(self, block: list[DocumentNode], options: ChunkOptions) -> list[list[DocumentNode]]:
+        """按节点边界装箱，单节点过长时继续下钻拆分。"""
 
         parts: list[list[DocumentNode]] = []
         current: list[DocumentNode] = []
         current_tokens = 0
+
         for node in block:
             node_tokens = self.token_counter.count(node.text)
             if node.node_type in {"paragraph", "list"} and not self._fits_single_node(node, options):
@@ -134,16 +153,29 @@ class ChunkSplitter:
                     current_tokens = 0
                 parts.extend(self._split_single_node(node, options))
                 continue
+
             if current and current_tokens + node_tokens > options.max_chunk_tokens:
                 parts.append(current)
                 current = [node.model_copy(deep=True)]
                 current_tokens = node_tokens
                 continue
+
             current.append(node.model_copy(deep=True))
             current_tokens += node_tokens
+
         if current:
             parts.append(current)
         return parts
+
+    def _extract_leading_titles(self, block: list[DocumentNode]) -> tuple[list[DocumentNode], list[DocumentNode]]:
+        """提取块首连续标题，确保它们始终跟随后续正文。"""
+
+        index = 0
+        while index < len(block) and block[index].node_type == "title":
+            index += 1
+        title_nodes = [node.model_copy(deep=True) for node in block[:index]]
+        content_nodes = [node.model_copy(deep=True) for node in block[index:]]
+        return title_nodes, content_nodes
 
     def _fits_budget(self, block: list[DocumentNode], options: ChunkOptions) -> bool:
         return self._token_count(block) <= options.max_chunk_tokens
@@ -196,7 +228,8 @@ class ChunkSplitter:
         return spans
 
     def _hard_split(self, text: str, options: ChunkOptions, base_offset: int) -> list[TextSpan]:
-        # 最后的兜底方案：先估一个字符窗口，再持续收缩到满足预算。
+        """最后的兜底方案：先估一个字符窗口，再持续收缩到满足预算。"""
+
         spans: list[TextSpan] = []
         approx_max_chars = max(32, options.max_chunk_tokens * 6)
         start = 0

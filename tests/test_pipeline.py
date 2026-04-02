@@ -85,6 +85,49 @@ def test_pipeline_keeps_content_in_the_same_section() -> None:
     assert ("Chapter Two",) in section_paths
 
 
+def test_pipeline_binds_title_with_following_paragraph_chunk() -> None:
+    payload = "# Product Guide\n\nThis paragraph should stay with the title."
+
+    pipeline = DocumentChunkPipeline()
+    result = pipeline.chunk_bytes(payload.encode("utf-8"), "demo.md")
+
+    assert result.total_chunks == 1
+    assert result.chunks[0].section_path == ["Product Guide"]
+    assert result.chunks[0].metadata.chunk_type in {"paragraph", "mixed"}
+    assert result.chunks[0].text.startswith("Product Guide")
+    assert "This paragraph should stay with the title." in result.chunks[0].text
+
+
+def test_pipeline_binds_title_with_following_list_chunk() -> None:
+    payload = "# Checklist\n\n- item one\n- item two"
+
+    pipeline = DocumentChunkPipeline()
+    result = pipeline.chunk_bytes(payload.encode("utf-8"), "demo.md")
+
+    assert result.total_chunks == 1
+    assert result.chunks[0].section_path == ["Checklist"]
+    assert result.chunks[0].text.startswith("Checklist")
+    assert "item one" in result.chunks[0].text
+    assert "item two" in result.chunks[0].text
+
+
+def test_pipeline_binds_title_with_following_table_chunk() -> None:
+    payload = (
+        "# Parameters\n\n"
+        "| Field | Meaning |\n"
+        "| --- | --- |\n"
+        "| A | Value |\n"
+    )
+
+    pipeline = DocumentChunkPipeline()
+    result = pipeline.chunk_bytes(payload.encode("utf-8"), "demo.md")
+
+    assert result.total_chunks == 1
+    assert result.chunks[0].section_path == ["Parameters"]
+    assert result.chunks[0].text.startswith("Parameters")
+    assert "Field | Meaning" in result.chunks[0].text
+
+
 def test_pipeline_splits_oversized_text_without_cutting_everything_to_one_chunk() -> None:
     large_paragraph = "This is a very long paragraph. " * ((settings.max_chunk_tokens * 3) + 40)
     payload = f"# Large Document\n\n{large_paragraph}"
@@ -120,10 +163,9 @@ def test_pipeline_llm_refiner_can_merge_adjacent_blocks() -> None:
     LlmBoundaryRefiner.decide_merge = original_merge
     settings.llm_enabled = original_flag
 
-    assert result.total_chunks == 2
-    merged_chunk = next(
-        chunk for chunk in result.chunks if "short explanation" in chunk.text and "strongly related" in chunk.text
-    )
+    assert result.total_chunks == 1
+    merged_chunk = result.chunks[0]
+    assert merged_chunk.text.startswith("Product Guide")
     assert "short explanation" in merged_chunk.text
     assert "strongly related" in merged_chunk.text
 

@@ -40,8 +40,14 @@ class ChunkMerger:
 
         if self._section_path(left) != self._section_path(right):
             return False
+
         left_type = self._chunk_type(left)
         right_type = self._chunk_type(right)
+
+        # 若左侧只剩孤立标题，优先把它挂回同章节的后续内容，避免标题单独成块。
+        if self._title_only(left) and right_type != "title":
+            return True
+
         if "title" in {left_type, right_type}:
             return False
         if {left_type, right_type} in ({"table", "paragraph"}, {"table", "list"}):
@@ -64,10 +70,15 @@ class ChunkMerger:
     def _token_count(self, block: list[DocumentNode]) -> int:
         return sum(self.token_counter.count(node.text) for node in block if node.text)
 
+    def _title_only(self, block: list[DocumentNode]) -> bool:
+        return bool(block) and all(node.node_type == "title" for node in block)
+
     def _chunk_type(self, block: list[DocumentNode]) -> str:
         if len(block) == 1:
             return block[0].node_type
         node_types = {node.node_type for node in block}
+        if node_types == {"title"}:
+            return "title"
         if "table" in node_types:
             return "table"
         if "list" in node_types:
