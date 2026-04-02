@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """供主流水线调用的可组合切分内核。"""
 
 from app.models.schemas import ChunkOptions, DocumentNode
@@ -20,6 +21,7 @@ class TextChunker:
 
     def chunk(self, nodes: list[DocumentNode], options: ChunkOptions) -> list[list[DocumentNode]]:
         """把标准节点切成最终用于序列化的块。"""
+
         blocks = self.segmenter.segment(nodes)
         blocks = self.merger.merge(blocks, options)
         blocks = self.splitter.split(blocks, options)

@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """API 集成测试，覆盖上传、URL、限流、超时和返回结构。"""
 
 import time
@@ -11,8 +12,8 @@ from app.core.config import settings
 from app.core.errors import OcrRequiredError
 from app.main import app, rate_limiter
 from app.models.schemas import DocumentNode
-from app.services.pipeline import DocumentChunkPipeline
 from app.services.boundary import BoundaryDecisionEngine
+from app.services.pipeline import DocumentChunkPipeline
 
 
 client = TestClient(app)
@@ -250,3 +251,26 @@ def test_chunk_by_upload_exposes_similarity_metadata_when_boundary_engine_runs()
     merged_chunk = next(chunk for chunk in body["chunks"] if "Short instruction." in chunk["text"])
     assert merged_chunk["metadata"]["merge_strategy"] == "similarity_high"
     assert merged_chunk["metadata"]["similarity_score"] == 0.93
+
+
+def test_chunk_by_upload_allows_request_level_model_overrides() -> None:
+    payload = "# Guide\n\nSimple content."
+    response = client.post(
+        "/v1/chunk/by-upload",
+        data={
+            "text_model": "text-override",
+            "flash_model": "flash-override",
+            "vision_model": "vision-override",
+            "embedding_base_url": "http://embedding.service/v1/embeddings",
+            "embedding_model": "embedding-override",
+        },
+        files={"file": ("sample.md", payload.encode("utf-8"), "text/markdown")},
+    )
+
+    assert response.status_code == 200
+    selected = response.json()["metadata"]["selected_options"]
+    assert selected["text_model"] == "text-override"
+    assert selected["flash_model"] == "flash-override"
+    assert selected["vision_model"] == "vision-override"
+    assert selected["embedding_base_url"] == "http://embedding.service/v1/embeddings"
+    assert selected["embedding_model"] == "embedding-override"

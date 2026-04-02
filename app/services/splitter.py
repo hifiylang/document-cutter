@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """面向超长候选块的递归拆分器。"""
 
 from dataclasses import dataclass
@@ -12,19 +13,41 @@ from app.services.token_counter import TokenCounter
 
 @dataclass
 class TextSpan:
+    """文本片段及其在原文中的相对位置。"""
+
     text: str
     start: int
     end: int
 
 
 class ChunkSplitter:
-    _sentence_separators = ("\n\n", "\n", "\t", " ", "。", "！", "？", ".", "!", "?", "；", ";", "，", ",", "、", "-", "_")
+    """在预算超限时，优先按语义边界递归拆分长文本。"""
+
+    _separators = (
+        "\n\n",
+        "\n",
+        "\t",
+        "。 ",
+        "！ ",
+        "？ ",
+        ". ",
+        "! ",
+        "? ",
+        "； ",
+        "; ",
+        "， ",
+        ", ",
+        " ",
+        "-",
+        "_",
+    )
 
     def __init__(self, token_counter: TokenCounter) -> None:
         self.token_counter = token_counter
 
     def split(self, blocks: list[list[DocumentNode]], options: ChunkOptions) -> list[list[DocumentNode]]:
         """逐块检查预算，必要时做递归拆分。"""
+
         result: list[list[DocumentNode]] = []
         for block in blocks:
             result.extend(self._split_block(block, options))
@@ -32,6 +55,7 @@ class ChunkSplitter:
 
     def _split_block(self, block: list[DocumentNode], options: ChunkOptions) -> list[list[DocumentNode]]:
         """单块拆分入口，优先保留结构边界。"""
+
         if not block:
             return []
         if self._fits_budget(block, options):
@@ -43,6 +67,7 @@ class ChunkSplitter:
 
     def _split_single_node(self, node: DocumentNode, options: ChunkOptions) -> list[list[DocumentNode]]:
         """拆单个长段落或长列表，并补齐位置偏移信息。"""
+
         spans = self._recursive_split_text(node.text, options, depth=0, base_offset=0)
         spans = self._pack_spans(spans, options)
         chunks: list[list[DocumentNode]] = []
@@ -57,19 +82,17 @@ class ChunkSplitter:
             overlap_span = self._build_overlap_span(span.text, span.end, options)
             if overlap_span is None:
                 continue
-            next_start = max(spans[index + 1].start - len(overlap_span.text), 0)
-            if next_start < spans[index + 1].start:
-                next_end = spans[index + 1].end
+            original_next = spans[index + 1]
+            next_start = max(original_next.start - len(overlap_span.text), 0)
+            if next_start < original_next.start:
+                next_end = original_next.end
                 candidate_text = node.text[next_start:next_end].strip()
-                while candidate_text and self.token_counter.count(candidate_text) > options.max_chunk_tokens and next_start < spans[index + 1].start:
+                while candidate_text and self.token_counter.count(candidate_text) > options.max_chunk_tokens and next_start < original_next.start:
                     next_start += 1
                     candidate_text = node.text[next_start:next_end].strip()
-                spans[index + 1] = TextSpan(
-                    text=candidate_text,
-                    start=next_start,
-                    end=next_end,
-                )
-                OVERLAP_COUNTER.inc()
+                if candidate_text and self.token_counter.count(candidate_text) <= options.max_chunk_tokens:
+                    spans[index + 1] = TextSpan(text=candidate_text, start=next_start, end=next_end)
+                    OVERLAP_COUNTER.inc()
         return chunks
 
     def _pack_spans(self, spans: list[TextSpan], options: ChunkOptions) -> list[TextSpan]:
@@ -79,7 +102,6 @@ class ChunkSplitter:
         current_text = spans[0].text
         current_start = spans[0].start
         current_end = spans[0].end
-        current_tokens = self.token_counter.count(current_text)
 
         for span in spans[1:]:
             candidate_text = f"{current_text}{span.text}"
@@ -87,13 +109,11 @@ class ChunkSplitter:
             if candidate_tokens <= options.max_chunk_tokens:
                 current_text = candidate_text
                 current_end = span.end
-                current_tokens = candidate_tokens
                 continue
             packed.append(TextSpan(current_text.strip(), current_start, current_end))
             current_text = span.text
             current_start = span.start
             current_end = span.end
-            current_tokens = self.token_counter.count(current_text)
 
         if current_text.strip():
             packed.append(TextSpan(current_text.strip(), current_start, current_end))
@@ -101,6 +121,7 @@ class ChunkSplitter:
 
     def _split_multi_node(self, block: list[DocumentNode], options: ChunkOptions) -> list[list[DocumentNode]]:
         """多节点块优先按节点边界装箱，实在超限再下钻到单节点拆分。"""
+
         parts: list[list[DocumentNode]] = []
         current: list[DocumentNode] = []
         current_tokens = 0
@@ -135,6 +156,7 @@ class ChunkSplitter:
 
     def _recursive_split_text(self, text: str, options: ChunkOptions, depth: int, base_offset: int) -> list[TextSpan]:
         """按分隔符优先级递归拆文本，尽量避免在奇怪位置硬切。"""
+
         normalized = text.strip()
         if not normalized:
             return []
@@ -144,7 +166,7 @@ class ChunkSplitter:
             start = text.find(normalized)
             return [TextSpan(normalized, base_offset + start, base_offset + start + len(normalized))]
 
-        for separator in self._sentence_separators:
+        for separator in self._separators:
             spans = self._split_by_separator(text, separator, base_offset)
             if len(spans) <= 1:
                 continue
@@ -158,22 +180,6 @@ class ChunkSplitter:
 
     def _split_by_separator(self, text: str, separator: str, base_offset: int) -> list[TextSpan]:
         spans: list[TextSpan] = []
-        if separator in {"。", "！", "？", ".", "!", "?", "；", ";", "，", ",", "、", "-", "_"}:
-            pattern = re.escape(separator)
-            start = 0
-            for match in re.finditer(pattern, text):
-                end = match.end()
-                chunk = text[start:end].strip()
-                if chunk:
-                    actual_start = text.find(chunk, start, end)
-                    spans.append(TextSpan(chunk, base_offset + actual_start, base_offset + actual_start + len(chunk)))
-                start = end
-            tail = text[start:].strip()
-            if tail:
-                actual_start = text.find(tail, start)
-                spans.append(TextSpan(tail, base_offset + actual_start, base_offset + actual_start + len(tail)))
-            return spans
-
         parts = text.split(separator)
         if len(parts) <= 1:
             return []
@@ -218,26 +224,19 @@ class ChunkSplitter:
             overlap_tokens = max(1, math.floor(estimated * options.overlap_ratio))
         if overlap_tokens <= 0:
             return None
-        overlap_text = self._tail_by_tokens(text, overlap_tokens)
+
+        approx_chars = max(8, overlap_tokens * 4)
+        overlap_text = text[-approx_chars:].strip()
         if not overlap_text:
             return None
-        return TextSpan(overlap_text, max(end_offset - len(overlap_text), 0), end_offset)
+        actual_start = max(end_offset - len(overlap_text), 0)
+        return TextSpan(overlap_text, actual_start, end_offset)
 
-    def _tail_by_tokens(self, text: str, max_tokens: int) -> str:
-        if max_tokens <= 0:
-            return ""
-        start = max(0, len(text) - max_tokens * 8)
-        candidate = text[start:].strip()
-        while candidate and self.token_counter.count(candidate) > max_tokens and start < len(text) - 1:
-            start += max(1, math.ceil((len(text) - start) * 0.1))
-            candidate = text[start:].strip()
-        return candidate
-
-    def _apply_offsets(self, node: DocumentNode, local_start: int, local_end: int) -> None:
-        original_start = node.source_meta.get("char_start")
-        if isinstance(original_start, int):
-            node.source_meta["char_start"] = original_start + local_start
-            node.source_meta["char_end"] = original_start + local_end
+    def _apply_offsets(self, node: DocumentNode, start: int, end: int) -> None:
+        base_start = node.source_meta.get("char_start")
+        if isinstance(base_start, int):
+            node.source_meta["char_start"] = base_start + start
+            node.source_meta["char_end"] = base_start + end
         else:
-            node.source_meta["char_start"] = local_start
-            node.source_meta["char_end"] = local_end
+            node.source_meta["char_start"] = start
+            node.source_meta["char_end"] = end

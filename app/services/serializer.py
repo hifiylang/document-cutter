@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """把内部块结果序列化成对外统一的 ChunkResponse。"""
 
 import uuid
@@ -9,6 +10,8 @@ from app.services.token_counter import TokenCounter
 
 
 class ChunkSerializer:
+    """负责聚合块级信息，并输出最终响应。"""
+
     strategy_version = "v2"
 
     def __init__(self, token_counter: TokenCounter) -> None:
@@ -21,6 +24,7 @@ class ChunkSerializer:
         response_metadata: dict[str, object] | None = None,
     ) -> ChunkResponse:
         """聚合块级元信息，并输出最终响应结构。"""
+
         chunks: list[Chunk] = []
         parser_type = Path(filename).suffix.lower().lstrip(".") or "text"
         for block in blocks:
@@ -36,9 +40,21 @@ class ChunkSerializer:
             chunk_type = self._chunk_type(block)
             modalities = sorted({node.source_meta.get("modality") for node in block if node.source_meta.get("modality")})
             sheet_names = sorted({node.source_meta.get("sheet_name") for node in block if node.source_meta.get("sheet_name")})
-            merge_strategy = next((node.source_meta.get("merge_strategy") for node in block if node.source_meta.get("merge_strategy")), None)
-            similarity_score = next((node.source_meta.get("similarity_score") for node in block if node.source_meta.get("similarity_score") is not None), None)
-            parser_strategy = sorted({node.source_meta.get("parser_strategy") for node in block if node.source_meta.get("parser_strategy")})
+            merge_strategy = next(
+                (node.source_meta.get("merge_strategy") for node in block if node.source_meta.get("merge_strategy")),
+                None,
+            )
+            similarity_score = next(
+                (
+                    node.source_meta.get("similarity_score")
+                    for node in block
+                    if node.source_meta.get("similarity_score") is not None
+                ),
+                None,
+            )
+            parser_strategy = sorted(
+                {node.source_meta.get("parser_strategy") for node in block if node.source_meta.get("parser_strategy")}
+            )
             offsets = self._collect_offsets(block)
             source_spans = self._collect_source_spans(block)
             token_count = self.token_counter.count(text)

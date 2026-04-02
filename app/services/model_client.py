@@ -1,5 +1,6 @@
 from __future__ import annotations
-"""统一封装文本和视觉模型调用，调用方只关心模型名与是否开启思考。"""
+
+"""统一封装文本与视觉模型调用。"""
 
 import json
 from typing import Any
@@ -30,6 +31,7 @@ class ModelClient:
         enable_thinking: bool = False,
     ) -> str:
         """调用文本模型并返回原始文本结果，默认不开启思考模式。"""
+
         kwargs: dict[str, Any] = {
             "model": model,
             "input": [
@@ -52,6 +54,7 @@ class ModelClient:
         enable_thinking: bool = False,
     ) -> str:
         """调用视觉模型，默认也不开启思考模式。"""
+
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": [

@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """视觉理解与 OCR 回退辅助能力。"""
 
 import base64
@@ -11,9 +12,10 @@ import uuid
 from app.core.config import settings
 from app.core.errors import OcrRequiredError
 from app.core.metrics import EXTERNAL_CALL_COUNTER, EXTERNAL_CALL_DURATION
-from app.models.schemas import DocumentNode
+from app.models.schemas import ChunkOptions, DocumentNode
 from app.services.model_client import ModelClient
 from app.services.prompt_store import get_prompt
+from app.services.selection import RuntimeSelector
 
 try:
     import fitz
@@ -22,17 +24,27 @@ except Exception:  # pragma: no cover
 
 
 class VisualDocumentAnalyzer:
+    """统一封装图片、扫描 PDF 和 PDF 局部图片区域的视觉解析。"""
+
     def __init__(self) -> None:
         self.enabled = bool(settings.openai_api_key and settings.vision_model)
         self.client = ModelClient() if self.enabled else None
+        self.selector = RuntimeSelector()
 
-    def analyze_image_bytes(self, file_bytes: bytes, filename: str, page_no: int | None = None) -> list[DocumentNode]:
-        if not self.enabled:
+    def analyze_image_bytes(
+        self,
+        file_bytes: bytes,
+        filename: str,
+        page_no: int | None = None,
+        options: ChunkOptions | None = None,
+    ) -> list[DocumentNode]:
+        selection = self.selector.resolve(options)
+        if not self.enabled or not selection.vision_model:
             raise OcrRequiredError("vision backend is not configured for image or scanned document parsing")
 
         mime_type = mimetypes.guess_type(filename)[0] or "image/png"
         raw = self._run_vision_prompt(
-            model=settings.vision_model,
+            model=selection.vision_model,
             prompt=get_prompt("vision", "image_understanding_prompt"),
             image_data_url=self._to_data_url(file_bytes, mime_type),
             enable_thinking=False,
@@ -53,13 +65,15 @@ class VisualDocumentAnalyzer:
         page_no: int,
         bbox: list[float],
         image_region_id: str,
+        options: ChunkOptions | None = None,
     ) -> list[DocumentNode]:
-        if not self.enabled:
+        selection = self.selector.resolve(options)
+        if not self.enabled or not selection.vision_model:
             raise OcrRequiredError("vision backend is not configured for image region parsing")
 
         mime_type = mimetypes.guess_type(filename)[0] or "image/png"
         raw = self._run_vision_prompt(
-            model=settings.vision_model,
+            model=selection.vision_model,
             prompt=get_prompt("vision", "cropped_region_prompt"),
             image_data_url=self._to_data_url(file_bytes, mime_type),
             enable_thinking=False,
@@ -77,10 +91,17 @@ class VisualDocumentAnalyzer:
             },
         )
 
-    def analyze_pdf_bytes(self, file_bytes: bytes, filename: str) -> list[DocumentNode]:
+    def analyze_pdf_bytes(
+        self,
+        file_bytes: bytes,
+        filename: str,
+        options: ChunkOptions | None = None,
+    ) -> list[DocumentNode]:
         if fitz is None:
             raise OcrRequiredError("pymupdf is required for scanned PDF OCR fallback")
-        if not self.enabled:
+
+        selection = self.selector.resolve(options)
+        if not self.enabled or not selection.vision_model:
             raise OcrRequiredError("vision backend is not configured for scanned PDF parsing")
 
         document = fitz.open(stream=file_bytes, filetype="pdf")
@@ -93,6 +114,7 @@ class VisualDocumentAnalyzer:
                 pixmap.tobytes("png"),
                 f"{filename}-page-{page_index + 1}.png",
                 page_index + 1,
+                options,
             )
             nodes.extend(page_nodes)
         return nodes

@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """服务入口，负责组装路由、中间件和指标端点。"""
 
 import logging
@@ -28,7 +29,7 @@ app = FastAPI(title=settings.app_name, debug=settings.debug)
 
 @app.middleware("http")
 async def request_context_middleware(request, call_next):
-    # 为每个请求注入请求标识，并在统一出口记录耗时和指标。
+    # 为每个请求注入 request_id，并在统一出口记录耗时和指标。
     request_id = request.headers.get("x-request-id", str(uuid.uuid4()))
     token = request_id_var.set(request_id)
     start = time.perf_counter()
