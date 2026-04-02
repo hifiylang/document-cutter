@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """根据标题、表格、列表等自然结构做首轮粗切分。"""
 
 from app.models.schemas import DocumentNode
@@ -9,6 +10,7 @@ class SemanticSegmenter:
 
     def segment(self, nodes: list[DocumentNode]) -> list[list[DocumentNode]]:
         """把节点切成粗粒度结构块，供后续 token 合并和拆分使用。"""
+
         if not nodes:
             return []
 

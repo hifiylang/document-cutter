@@ -7,9 +7,10 @@ import time
 
 from app.core.config import settings
 from app.core.metrics import EXTERNAL_CALL_COUNTER, EXTERNAL_CALL_DURATION
-from app.models.schemas import DocumentNode
+from app.models.schemas import ChunkOptions, DocumentNode
 from app.services.model_client import ModelClient
 from app.services.prompt_store import get_prompt
+from app.services.selection import RuntimeSelector
 
 
 class LlmBoundaryRefiner:
@@ -18,12 +19,14 @@ class LlmBoundaryRefiner:
     def __init__(self) -> None:
         self.enabled = bool(settings.llm_enabled and settings.openai_api_key)
         self.client = ModelClient() if self.enabled else None
-        # 简单文本任务优先走 flash 小模型；如果没单独配置，再回退到文本模型。
-        self.flash_model = settings.flash_model or settings.text_model
+        self.selector = RuntimeSelector()
 
-    def decide_merge(self, left_text: str, right_text: str) -> bool:
+    def decide_merge(self, left_text: str, right_text: str, options: ChunkOptions | None = None) -> bool:
         """判断两个相邻文本块是否应该合并。"""
-        if not self.enabled or not self.client or not self.flash_model:
+
+        selection = self.selector.resolve(options)
+        model = selection.flash_model
+        if not self.enabled or not self.client or not model:
             return False
 
         prompt = get_prompt("llm", "boundary_merge_system")
@@ -31,11 +34,11 @@ class LlmBoundaryRefiner:
         start = time.perf_counter()
         try:
             raw = self.client.create_text_json(
-                model=self.flash_model,
+                model=model,
                 system_prompt=prompt,
                 user_payload=payload,
                 temperature=0.1,
-                # flash 小模型默认不开启深度思考模式。
+                # flash 小模型默认不开启深度思考。
                 enable_thinking=False,
             )
             result = json.loads(raw)
@@ -49,6 +52,7 @@ class LlmBoundaryRefiner:
 
     def refine_blocks(self, blocks: list[list[DocumentNode]]) -> list[list[DocumentNode]]:
         """对相邻块做灰区裁决；LLM 失败时直接回退原结果。"""
+
         if not blocks:
             return []
         try:
@@ -70,6 +74,7 @@ class LlmBoundaryRefiner:
 
     def _can_consider_merge(self, left_block: list[DocumentNode], right_block: list[DocumentNode]) -> bool:
         """只允许同章节、非标题、非表格的相邻块进入 LLM 裁决。"""
+
         if not left_block or not right_block:
             return False
         left_types = {node.node_type for node in left_block}
@@ -82,6 +87,7 @@ class LlmBoundaryRefiner:
 
     def _section_path(self, block: list[DocumentNode]) -> list[str]:
         """取块里最近的章节路径，用于判断是否属于同一语义范围。"""
+
         for node in reversed(block):
             section_path = node.source_meta.get("section_path")
             if section_path:

@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """文档切分主流水线编排。"""
 
 from pathlib import Path
@@ -10,6 +11,7 @@ from app.core.errors import DownloadError, FileTooLargeError, OcrRequiredError, 
 from app.models.schemas import ChunkOptions, ChunkResponse, DocumentNode
 from app.services.normalizer import DocumentNormalizer
 from app.services.parser import get_parser, is_image_filename
+from app.services.selection import RuntimeSelector
 from app.services.serializer import ChunkSerializer
 from app.services.text_chunker import TextChunker
 from app.services.token_counter import TokenCounter
@@ -34,12 +36,15 @@ SUPPORTED_SUFFIXES = {
 
 
 class DocumentChunkPipeline:
+    """组织解析、标准化、切分和序列化的总入口。"""
+
     def __init__(self) -> None:
         self.token_counter = TokenCounter()
         self.normalizer = DocumentNormalizer()
         self.chunker = TextChunker(self.token_counter)
         self.serializer = ChunkSerializer(self.token_counter)
         self.visual_analyzer = VisualDocumentAnalyzer()
+        self.selector = RuntimeSelector()
 
     def chunk_bytes(
         self,
@@ -48,6 +53,7 @@ class DocumentChunkPipeline:
         options: ChunkOptions | None = None,
     ) -> ChunkResponse:
         """从原始文件字节流直接完成解析、切分和序列化。"""
+
         options = options or ChunkOptions(
             target_chunk_tokens=settings.target_chunk_tokens,
             min_chunk_tokens=settings.min_chunk_tokens,
@@ -56,12 +62,15 @@ class DocumentChunkPipeline:
             overlap_tokens=settings.overlap_tokens,
             similarity_enabled=settings.similarity_enabled,
             llm_enabled=settings.llm_enabled,
+            text_model=settings.text_model,
+            flash_model=settings.flash_model,
+            vision_model=settings.vision_model,
             embedding_base_url=settings.embedding_base_url,
             embedding_model=settings.embedding_model,
             embedding_api_key=settings.embedding_api_key,
         )
         self._validate_file(filename, file_bytes)
-        nodes = self._extract_nodes(file_bytes, filename)
+        nodes = self._extract_nodes(file_bytes, filename, options)
         nodes = self.normalizer.normalize(nodes)
         if not nodes:
             suffix = Path(filename).suffix.lower()
@@ -73,11 +82,12 @@ class DocumentChunkPipeline:
         return self.serializer.serialize(
             filename,
             blocks,
-            response_metadata=self._build_response_metadata(options),
+            response_metadata=self.selector.to_response_metadata(options),
         )
 
     def chunk_url(self, document_url: str, filename: str, options: ChunkOptions | None = None) -> ChunkResponse:
         """先下载远程文档，再复用本地切分主链路。"""
+
         try:
             content = self._download_url(document_url)
         except DownloadError:
@@ -86,14 +96,15 @@ class DocumentChunkPipeline:
             raise DownloadError(f"failed to download document from {document_url}") from exc
         return self.chunk_bytes(content, filename, options)
 
-    def _extract_nodes(self, file_bytes: bytes, filename: str) -> list[DocumentNode]:
+    def _extract_nodes(self, file_bytes: bytes, filename: str, options: ChunkOptions) -> list[DocumentNode]:
         """按文件类型选择最合适的解析方式。"""
+
         if is_image_filename(filename):
-            return self._analyze_image_document(file_bytes, filename)
+            return self._analyze_image_document(file_bytes, filename, options)
 
         nodes = self._parse_document(file_bytes, filename)
         if Path(filename).suffix.lower() == ".pdf" and self._should_fallback_to_pdf_ocr(nodes):
-            vision_nodes = self._analyze_pdf_with_vision(file_bytes, filename)
+            vision_nodes = self._analyze_pdf_with_vision(file_bytes, filename, options)
             if vision_nodes:
                 return vision_nodes
         return nodes
@@ -102,14 +113,15 @@ class DocumentChunkPipeline:
         parser = get_parser(filename)
         return parser.parse(file_bytes, filename)
 
-    def _analyze_image_document(self, file_bytes: bytes, filename: str) -> list[DocumentNode]:
-        return self.visual_analyzer.analyze_image_bytes(file_bytes, filename)
+    def _analyze_image_document(self, file_bytes: bytes, filename: str, options: ChunkOptions) -> list[DocumentNode]:
+        return self.visual_analyzer.analyze_image_bytes(file_bytes, filename, options=options)
 
-    def _analyze_pdf_with_vision(self, file_bytes: bytes, filename: str) -> list[DocumentNode]:
-        return self.visual_analyzer.analyze_pdf_bytes(file_bytes, filename)
+    def _analyze_pdf_with_vision(self, file_bytes: bytes, filename: str, options: ChunkOptions) -> list[DocumentNode]:
+        return self.visual_analyzer.analyze_pdf_bytes(file_bytes, filename, options=options)
 
     def _should_fallback_to_pdf_ocr(self, nodes: list[DocumentNode]) -> bool:
         """PDF 提取出的正文过少时，进入整页 OCR 回退链路。"""
+
         total_chars = sum(len(node.text) for node in nodes)
         return total_chars < settings.pdf_ocr_fallback_min_chars
 
@@ -128,17 +140,3 @@ class DocumentChunkPipeline:
             raise UnsupportedFileTypeError(f"unsupported file type: {suffix or filename}")
         if len(file_bytes) > settings.max_upload_mb * 1024 * 1024:
             raise FileTooLargeError(f"file exceeds max size of {settings.max_upload_mb} MB")
-
-    def _build_response_metadata(self, options: ChunkOptions) -> dict[str, object]:
-        """返回本次请求实际生效的关键模型与服务选择。"""
-        selected_embedding_base_url = options.embedding_base_url or settings.embedding_base_url
-        selected_embedding_model = options.embedding_model or settings.embedding_model
-        selected_flash_model = settings.flash_model or settings.text_model
-        return {
-            "selected_options": {
-                "embedding_base_url": selected_embedding_base_url,
-                "embedding_model": selected_embedding_model,
-                "flash_model": selected_flash_model,
-                "vision_model": settings.vision_model,
-            }
-        }

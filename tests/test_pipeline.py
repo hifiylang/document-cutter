@@ -1,5 +1,6 @@
 from __future__ import annotations
-"""主切分链路测试，覆盖解析、OCR 回退和边界增强行为。"""
+
+"""主切分链路测试，覆盖解析、OCR 回退、边界增强和统一选择器。"""
 
 from io import BytesIO
 
@@ -8,10 +9,12 @@ import xlwt
 
 from app.core.config import settings
 from app.models.schemas import ChunkOptions, DocumentNode
+from app.services.boundary import BoundaryDecisionEngine
 from app.services.llm import LlmBoundaryRefiner
 from app.services.parser import PdfParser, get_parser
 from app.services.pipeline import DocumentChunkPipeline
-from app.services.boundary import BoundaryDecisionEngine
+from app.services.selection import RuntimeSelector
+from app.services.token_counter import TokenCounter
 
 
 def test_xlsx_parser_extracts_each_sheet_as_table_node() -> None:
@@ -102,7 +105,7 @@ def test_pipeline_llm_refiner_can_merge_adjacent_blocks() -> None:
 
     original = LlmBoundaryRefiner.decide_merge
 
-    def always_merge(self: LlmBoundaryRefiner, left_text: str, right_text: str) -> bool:
+    def always_merge(self: LlmBoundaryRefiner, left_text: str, right_text: str, options=None) -> bool:
         return True
 
     LlmBoundaryRefiner.decide_merge = always_merge
@@ -132,7 +135,7 @@ def test_pipeline_llm_refiner_falls_back_to_rule_blocks_on_error() -> None:
 
     original = LlmBoundaryRefiner.decide_merge
 
-    def broken(self: LlmBoundaryRefiner, left_text: str, right_text: str) -> bool:
+    def broken(self: LlmBoundaryRefiner, left_text: str, right_text: str, options=None) -> bool:
         raise RuntimeError("llm failure")
 
     LlmBoundaryRefiner.decide_merge = broken
@@ -153,7 +156,7 @@ def test_pipeline_llm_refiner_falls_back_to_rule_blocks_on_error() -> None:
 def test_pipeline_uses_visual_analyzer_for_image_documents() -> None:
     original = DocumentChunkPipeline._analyze_image_document
 
-    def fake_analyze(self: DocumentChunkPipeline, file_bytes: bytes, filename: str) -> list[DocumentNode]:
+    def fake_analyze(self: DocumentChunkPipeline, file_bytes: bytes, filename: str, options) -> list[DocumentNode]:
         assert filename == "demo.png"
         return [
             DocumentNode(
@@ -181,7 +184,7 @@ def test_pipeline_falls_back_to_vision_ocr_for_scanned_pdf() -> None:
     def fake_parse(self: DocumentChunkPipeline, file_bytes: bytes, filename: str) -> list[DocumentNode]:
         return []
 
-    def fake_ocr(self: DocumentChunkPipeline, file_bytes: bytes, filename: str) -> list[DocumentNode]:
+    def fake_ocr(self: DocumentChunkPipeline, file_bytes: bytes, filename: str, options) -> list[DocumentNode]:
         return [
             DocumentNode(
                 node_id="pdf-ocr-node",
@@ -232,7 +235,7 @@ def test_boundary_engine_merges_when_similarity_is_high() -> None:
     right = [DocumentNode(node_id="2", node_type="paragraph", text="Usage details and precautions", source_meta={"section_path": ["Guide"]})]
 
     original_score = engine.similarity_scorer.score
-    engine.similarity_scorer.score = lambda a, b: 0.95
+    engine.similarity_scorer.score = lambda a, b, options=None: 0.95
     decision = engine.should_merge(left, right, ChunkOptions(max_chunk_tokens=160, min_chunk_tokens=20, llm_enabled=True))
     engine.similarity_scorer.score = original_score
 
@@ -247,7 +250,7 @@ def test_boundary_engine_keeps_when_similarity_is_low() -> None:
     right = [DocumentNode(node_id="2", node_type="paragraph", text="Refund policy and billing", source_meta={"section_path": ["Guide"]})]
 
     original_score = engine.similarity_scorer.score
-    engine.similarity_scorer.score = lambda a, b: 0.41
+    engine.similarity_scorer.score = lambda a, b, options=None: 0.41
     decision = engine.should_merge(left, right, ChunkOptions(max_chunk_tokens=160, min_chunk_tokens=20, llm_enabled=True))
     engine.similarity_scorer.score = original_score
 
@@ -263,8 +266,8 @@ def test_boundary_engine_uses_llm_for_gray_zone() -> None:
 
     original_score = engine.similarity_scorer.score
     original_merge = engine.llm_refiner.decide_merge
-    engine.similarity_scorer.score = lambda a, b: 0.8
-    engine.llm_refiner.decide_merge = lambda a, b: True
+    engine.similarity_scorer.score = lambda a, b, options=None: 0.8
+    engine.llm_refiner.decide_merge = lambda a, b, options=None: True
     decision = engine.should_merge(left, right, ChunkOptions(max_chunk_tokens=160, min_chunk_tokens=20, llm_enabled=True))
     engine.similarity_scorer.score = original_score
     engine.llm_refiner.decide_merge = original_merge
@@ -282,11 +285,11 @@ def test_boundary_engine_falls_back_when_similarity_service_fails() -> None:
     original_score = engine.similarity_scorer.score
     original_merge = engine.llm_refiner.decide_merge
 
-    def broken_score(a: str, b: str) -> float:
+    def broken_score(a: str, b: str, options=None) -> float:
         raise RuntimeError("embedding unavailable")
 
     engine.similarity_scorer.score = broken_score
-    engine.llm_refiner.decide_merge = lambda a, b: False
+    engine.llm_refiner.decide_merge = lambda a, b, options=None: False
     decision = engine.should_merge(left, right, ChunkOptions(max_chunk_tokens=160, min_chunk_tokens=20, llm_enabled=True))
     engine.similarity_scorer.score = original_score
     engine.llm_refiner.decide_merge = original_merge
@@ -294,3 +297,34 @@ def test_boundary_engine_falls_back_when_similarity_service_fails() -> None:
     assert decision["merge"] is False
     assert decision["strategy"] == "llm_fallback"
     assert decision["similarity_score"] is None
+
+
+def test_runtime_selector_prefers_request_level_models() -> None:
+    selector = RuntimeSelector()
+    selection = selector.resolve(
+        ChunkOptions(
+            text_model="text-override",
+            flash_model="flash-override",
+            vision_model="vision-override",
+            embedding_base_url="http://embedding.service/v1/embeddings",
+            embedding_model="embedding-override",
+            embedding_api_key="secret",
+        )
+    )
+
+    assert selection.text_model == "text-override"
+    assert selection.flash_model == "flash-override"
+    assert selection.vision_model == "vision-override"
+    assert selection.embedding_base_url == "http://embedding.service/v1/embeddings"
+    assert selection.embedding_model == "embedding-override"
+    assert selection.embedding_api_key == "secret"
+
+
+def test_token_counter_uses_cache_for_duplicate_text() -> None:
+    counter = TokenCounter()
+    text = "repeat this text"
+    first = counter.count(text)
+    second = counter.count(text)
+
+    assert first == second
+    assert text in counter._cache

@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """文档切分服务的对外 HTTP 路由。"""
 
 import asyncio
@@ -17,6 +18,7 @@ pipeline = DocumentChunkPipeline()
 
 async def _run_with_timeout(func, *args):
     """把同步切分逻辑放到线程池里执行，并统一加总超时。"""
+
     try:
         return await asyncio.wait_for(
             asyncio.to_thread(func, *args),
@@ -29,6 +31,7 @@ async def _run_with_timeout(func, *args):
 @router.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     """健康检查接口。"""
+
     return HealthResponse()
 
 
@@ -42,11 +45,15 @@ async def chunk_by_upload(
     overlap_tokens: int | None = Form(default=None),
     similarity_enabled: bool | None = Form(default=None),
     llm_enabled: bool | None = Form(default=None),
+    text_model: str | None = Form(default=None),
+    flash_model: str | None = Form(default=None),
+    vision_model: str | None = Form(default=None),
     embedding_base_url: str | None = Form(default=None),
     embedding_model: str | None = Form(default=None),
     embedding_api_key: str | None = Form(default=None),
 ) -> ChunkResponse:
     """上传文件并返回切分结果。"""
+
     try:
         payload = await file.read()
         options = ChunkOptions(
@@ -57,6 +64,9 @@ async def chunk_by_upload(
             overlap_tokens=settings.overlap_tokens if overlap_tokens is None else overlap_tokens,
             similarity_enabled=settings.similarity_enabled if similarity_enabled is None else similarity_enabled,
             llm_enabled=settings.llm_enabled if llm_enabled is None else llm_enabled,
+            text_model=text_model,
+            flash_model=flash_model,
+            vision_model=vision_model,
             embedding_base_url=embedding_base_url,
             embedding_model=embedding_model,
             embedding_api_key=embedding_api_key,
@@ -74,6 +84,7 @@ async def chunk_by_upload(
 @router.post("/v1/chunk/by-url", response_model=ChunkResponse)
 async def chunk_by_url(request: ChunkByUrlRequest) -> ChunkResponse:
     """按远程 URL 拉取文档并返回切分结果。"""
+
     try:
         return await _run_with_timeout(
             pipeline.chunk_url,

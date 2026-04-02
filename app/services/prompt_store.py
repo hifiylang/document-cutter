@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """统一从 YAML 中加载提示词，避免提示词散落在业务代码里。"""
 
 from functools import lru_cache

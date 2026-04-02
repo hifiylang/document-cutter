@@ -37,8 +37,8 @@ class Settings(BaseSettings):
     # 模型配置
     llm_enabled: bool = False
     text_model: str | None = None
-    vision_model: str | None = None
     flash_model: str | None = None
+    vision_model: str | None = None
     openai_api_key: str | None = None
     openai_base_url: str | None = None
 
