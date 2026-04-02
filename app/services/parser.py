@@ -1,11 +1,13 @@
 from __future__ import annotations
-"""按文件类型把原始文档解析成统一的 DocumentNode。"""
+"""Parse different file types into the unified DocumentNode structure."""
 
 import io
+import logging
 import re
 import uuid
 from abc import ABC, abstractmethod
-from collections import defaultdict
+from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 
 from docx import Document as DocxDocument
@@ -13,7 +15,13 @@ from openpyxl import load_workbook
 from pypdf import PdfReader
 import xlrd
 
+from app.core.metrics import (
+    PDF_IMAGE_REGION_DETECTED,
+    PDF_IMAGE_REGION_VISION_ERROR,
+    PDF_IMAGE_REGION_VISION_SUCCESS,
+)
 from app.models.schemas import DocumentNode
+from app.services.vision import VisualDocumentAnalyzer
 
 try:
     import fitz
@@ -21,7 +29,19 @@ except Exception:  # pragma: no cover
     fitz = None  # type: ignore
 
 
+logger = logging.getLogger(__name__)
+
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
+
+
+@dataclass
+class PdfImageRegion:
+    page_no: int
+    bbox: list[float]
+    image_region_id: str
+    order: int
+    parser_strategy: str = "pdf_image_region"
+    layout_role: str = "image_region"
 
 
 class BaseParser(ABC):
@@ -35,94 +55,150 @@ class TxtMarkdownParser(BaseParser):
     list_re = re.compile(r"^(\s*(?:[-*+]|\d+[.)]))\s+(.+)$")
 
     def parse(self, file_bytes: bytes, filename: str) -> list[DocumentNode]:
-        # Markdown/TXT 本身带有轻量结构标记，适合直接做首轮结构识别。
         text = file_bytes.decode("utf-8", errors="ignore")
-        lines = [line.rstrip() for line in text.splitlines()]
+        lines = text.splitlines(keepends=True)
         nodes: list[DocumentNode] = []
         paragraph_buf: list[str] = []
+        paragraph_start: int | None = None
         list_buf: list[str] = []
-        in_table = False
+        list_start: int | None = None
         table_buf: list[str] = []
+        table_start: int | None = None
+        cursor = 0
 
-        def flush_paragraph() -> None:
-            if not paragraph_buf:
+        def flush_paragraph(end: int) -> None:
+            nonlocal paragraph_start
+            if not paragraph_buf or paragraph_start is None:
                 return
-            body = "\n".join(paragraph_buf).strip()
+            body = "".join(paragraph_buf).strip()
             if body:
-                nodes.append(DocumentNode(node_id=str(uuid.uuid4()), node_type="paragraph", text=body))
+                body_start = text.find(body, paragraph_start, end)
+                nodes.append(
+                    DocumentNode(
+                        node_id=str(uuid.uuid4()),
+                        node_type="paragraph",
+                        text=body,
+                        source_meta={
+                            "char_start": body_start,
+                            "char_end": body_start + len(body),
+                            "parser_strategy": "markdown_text",
+                        },
+                    )
+                )
             paragraph_buf.clear()
+            paragraph_start = None
 
-        def flush_list() -> None:
-            if not list_buf:
+        def flush_list(end: int) -> None:
+            nonlocal list_start
+            if not list_buf or list_start is None:
                 return
-            body = "\n".join(list_buf).strip()
+            body = "".join(list_buf).strip()
             if body:
-                nodes.append(DocumentNode(node_id=str(uuid.uuid4()), node_type="list", text=body))
+                body_start = text.find(body, list_start, end)
+                nodes.append(
+                    DocumentNode(
+                        node_id=str(uuid.uuid4()),
+                        node_type="list",
+                        text=body,
+                        source_meta={
+                            "char_start": body_start,
+                            "char_end": body_start + len(body),
+                            "parser_strategy": "markdown_text",
+                        },
+                    )
+                )
             list_buf.clear()
+            list_start = None
 
-        def flush_table() -> None:
-            nonlocal in_table
-            if not table_buf:
+        def flush_table(end: int) -> None:
+            nonlocal table_start
+            if not table_buf or table_start is None:
                 return
-            nodes.append(DocumentNode(node_id=str(uuid.uuid4()), node_type="table", text="\n".join(table_buf)))
+            body = "".join(table_buf).strip()
+            if body:
+                body_start = text.find(body, table_start, end)
+                nodes.append(
+                    DocumentNode(
+                        node_id=str(uuid.uuid4()),
+                        node_type="table",
+                        text=body,
+                        source_meta={
+                            "char_start": body_start,
+                            "char_end": body_start + len(body),
+                            "parser_strategy": "markdown_table",
+                        },
+                    )
+                )
             table_buf.clear()
-            in_table = False
+            table_start = None
 
         for raw in lines:
-            line = raw.strip()
-            heading_match = self.heading_re.match(line)
-            is_table_row = "|" in line and line.count("|") >= 2
-            is_list_row = bool(self.list_re.match(line))
+            line_start = cursor
+            cursor += len(raw)
+            line = raw.rstrip("\r\n")
+            stripped = line.strip()
+            heading_match = self.heading_re.match(stripped)
+            is_table_row = "|" in stripped and stripped.count("|") >= 2
+            is_list_row = bool(self.list_re.match(stripped))
 
             if heading_match:
-                flush_paragraph()
-                flush_list()
-                flush_table()
+                flush_paragraph(line_start)
+                flush_list(line_start)
+                flush_table(line_start)
                 marks, title = heading_match.groups()
+                body_start = text.find(title.strip(), line_start, cursor)
                 nodes.append(
                     DocumentNode(
                         node_id=str(uuid.uuid4()),
                         node_type="title",
                         level=len(marks),
                         text=title.strip(),
+                        source_meta={
+                            "char_start": body_start,
+                            "char_end": body_start + len(title.strip()),
+                            "parser_strategy": "markdown_title",
+                        },
                     )
                 )
                 continue
 
             if is_table_row:
-                flush_paragraph()
-                flush_list()
-                in_table = True
+                flush_paragraph(line_start)
+                flush_list(line_start)
+                if table_start is None:
+                    table_start = line_start
                 table_buf.append(raw)
                 continue
 
-            if in_table and not is_table_row:
-                flush_table()
+            if table_buf:
+                flush_table(line_start)
 
             if is_list_row:
-                flush_paragraph()
+                flush_paragraph(line_start)
+                if list_start is None:
+                    list_start = line_start
                 list_buf.append(raw)
                 continue
 
-            if list_buf and not is_list_row:
-                flush_list()
+            if list_buf:
+                flush_list(line_start)
 
-            if not line:
-                flush_paragraph()
-                flush_list()
+            if not stripped:
+                flush_paragraph(line_start)
                 continue
 
+            if paragraph_start is None:
+                paragraph_start = line_start
             paragraph_buf.append(raw)
 
-        flush_paragraph()
-        flush_list()
-        flush_table()
+        flush_paragraph(len(text))
+        flush_list(len(text))
+        flush_table(len(text))
         return nodes
 
 
 class DocxParser(BaseParser):
     def parse(self, file_bytes: bytes, filename: str) -> list[DocumentNode]:
-        # Word 文档优先尊重标题样式，其次再识别普通段落和列表。
         doc = DocxDocument(io.BytesIO(file_bytes))
         nodes: list[DocumentNode] = []
         for p in doc.paragraphs:
@@ -133,10 +209,25 @@ class DocxParser(BaseParser):
             if style_name.startswith("heading"):
                 digits = "".join(ch for ch in style_name if ch.isdigit())
                 level = int(digits) if digits else 1
-                nodes.append(DocumentNode(node_id=str(uuid.uuid4()), node_type="title", level=level, text=text))
+                nodes.append(
+                    DocumentNode(
+                        node_id=str(uuid.uuid4()),
+                        node_type="title",
+                        level=level,
+                        text=text,
+                        source_meta={"parser_strategy": "docx_heading"},
+                    )
+                )
             else:
                 node_type = "list" if re.match(r"^\s*(?:[-*+]|\d+[.)])\s+", text) else "paragraph"
-                nodes.append(DocumentNode(node_id=str(uuid.uuid4()), node_type=node_type, text=text))
+                nodes.append(
+                    DocumentNode(
+                        node_id=str(uuid.uuid4()),
+                        node_type=node_type,
+                        text=text,
+                        source_meta={"parser_strategy": "docx_paragraph"},
+                    )
+                )
 
         for table in doc.tables:
             rows = []
@@ -146,54 +237,186 @@ class DocxParser(BaseParser):
                     rows.append(" | ".join(cells))
             table_text = "\n".join(rows).strip()
             if table_text:
-                nodes.append(DocumentNode(node_id=str(uuid.uuid4()), node_type="table", text=table_text))
+                nodes.append(
+                    DocumentNode(
+                        node_id=str(uuid.uuid4()),
+                        node_type="table",
+                        text=table_text,
+                        source_meta={"parser_strategy": "docx_table"},
+                    )
+                )
         return nodes
 
 
 class PdfParser(BaseParser):
     page_number_re = re.compile(r"^(?:page\s*\d+|第\s*\d+\s*页|\d+\s*/\s*\d+)$", re.IGNORECASE)
 
+    def __init__(self) -> None:
+        self.visual_analyzer = VisualDocumentAnalyzer()
+
     def parse(self, file_bytes: bytes, filename: str) -> list[DocumentNode]:
         nodes: list[DocumentNode] = []
-        # PDF 先走版面理解更强的解析器，失败后再回退普通文本抽取。
         if fitz is not None:
-            nodes = self._extract_with_pymupdf(file_bytes)
+            nodes = self._extract_with_pymupdf(file_bytes, filename)
         if not nodes:
             nodes = self._extract_with_pypdf(file_bytes)
         return self._remove_repeated_page_noise(nodes)
 
-    def _extract_with_pymupdf(self, file_bytes: bytes) -> list[DocumentNode]:
+    def _extract_with_pymupdf(self, file_bytes: bytes, filename: str) -> list[DocumentNode]:
         document = fitz.open(stream=file_bytes, filetype="pdf")
         nodes: list[DocumentNode] = []
         for page_index, page in enumerate(document, start=1):
             page_height = float(page.rect.height or 1)
-            blocks = page.get_text("blocks")
-            # 先按垂直位置，再按水平位置排序，尽量贴近阅读顺序。
-            ordered_blocks = sorted(blocks, key=lambda item: (round(float(item[1]) / 20), float(item[0])))
-            for block in ordered_blocks:
+            text_blocks = page.get_text("blocks")
+            page_tables = self._extract_tables_from_page(page, page_index)
+            table_bboxes = [table.source_meta.get("bbox") for table in page_tables if table.source_meta.get("bbox")]
+            page_regions = self._extract_image_regions(page, page_index, table_bboxes)
+            page_text_nodes = self._extract_text_nodes(page_index, page_height, text_blocks, table_bboxes)
+            page_image_nodes = self._extract_image_nodes(page, page_index, filename, page_regions)
+            page_nodes = self._assemble_page_nodes(page_text_nodes, page_tables, page_image_nodes)
+            logger.info(
+                "pdf page=%s image_regions=%s image_nodes=%s text_nodes=%s table_nodes=%s",
+                page_index,
+                len(page_regions),
+                len(page_image_nodes),
+                len(page_text_nodes),
+                len(page_tables),
+            )
+            nodes.extend(page_nodes)
+        return nodes
+
+    def _extract_text_nodes(
+        self,
+        page_index: int,
+        page_height: float,
+        blocks,
+        table_bboxes: list[object],
+    ) -> list[DocumentNode]:
+        nodes: list[DocumentNode] = []
+        for block in self._sort_blocks_by_columns(blocks):
+            x0, y0, x1, y1, text, *_ = block
+            bbox = [float(x0), float(y0), float(x1), float(y1)]
+            if self._overlaps_any(bbox, table_bboxes):
+                continue
+            cleaned = self._clean_pdf_text(text)
+            if not cleaned:
+                continue
+            node_type, level = self._infer_pdf_node_type(cleaned)
+            nodes.append(
+                DocumentNode(
+                    node_id=str(uuid.uuid4()),
+                    node_type=node_type,
+                    level=level,
+                    text=cleaned,
+                    source_page=page_index,
+                    source_meta={
+                        "bbox": bbox,
+                        "layout_role": self._layout_role(float(y0), float(y1), page_height),
+                        "parser_strategy": "pymupdf",
+                        "modality": "text",
+                        "page_layout": f"page_{page_index}",
+                    },
+                )
+            )
+        return nodes
+
+    def _extract_image_regions(self, page, page_index: int, table_bboxes: list[object]) -> list[PdfImageRegion]:
+        page_dict = page.get_text("dict")
+        regions: list[PdfImageRegion] = []
+        order = 0
+        page_area = max(float(page.rect.width * page.rect.height), 1.0)
+        for block in page_dict.get("blocks", []):
+            if block.get("type") != 1:
+                continue
+            bbox = block.get("bbox")
+            if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+                continue
+            normalized_bbox = [float(value) for value in bbox]
+            area = max((normalized_bbox[2] - normalized_bbox[0]) * (normalized_bbox[3] - normalized_bbox[1]), 0.0)
+            if area / page_area < 0.01:
+                continue
+            if self._overlaps_any(normalized_bbox, table_bboxes):
+                continue
+            image_region = PdfImageRegion(
+                page_no=page_index,
+                bbox=normalized_bbox,
+                image_region_id=str(uuid.uuid4()),
+                order=order,
+            )
+            order += 1
+            regions.append(image_region)
+
+        if not regions:
+            for index, block in enumerate(page.get_text("blocks")):
                 x0, y0, x1, y1, text, *_ = block
-                cleaned = self._clean_pdf_text(text)
-                if not cleaned:
+                normalized_bbox = [float(x0), float(y0), float(x1), float(y1)]
+                area = max((normalized_bbox[2] - normalized_bbox[0]) * (normalized_bbox[3] - normalized_bbox[1]), 0.0)
+                block_text = (text or "").strip()
+                if block_text and not block_text.lower().startswith("<image:"):
                     continue
-                node_type, level = self._infer_pdf_node_type(cleaned)
-                source_meta = {
-                    "bbox": [float(x0), float(y0), float(x1), float(y1)],
-                    "layout_role": self._layout_role(float(y0), float(y1), page_height),
-                    "parser_strategy": "pymupdf",
-                }
-                nodes.append(
-                    DocumentNode(
-                        node_id=str(uuid.uuid4()),
-                        node_type=node_type,
-                        level=level,
-                        text=cleaned,
-                        source_page=page_index,
-                        source_meta=source_meta,
+                if area / page_area < 0.03:
+                    continue
+                if self._overlaps_any(normalized_bbox, table_bboxes):
+                    continue
+                regions.append(
+                    PdfImageRegion(
+                        page_no=page_index,
+                        bbox=normalized_bbox,
+                        image_region_id=str(uuid.uuid4()),
+                        order=index,
+                        parser_strategy="pdf_image_region_heuristic",
                     )
                 )
 
-            nodes.extend(self._extract_tables_from_page(page, page_index))
-        return nodes
+        for _ in regions:
+            PDF_IMAGE_REGION_DETECTED.inc()
+        return regions
+
+    def _extract_image_nodes(
+        self,
+        page,
+        page_index: int,
+        filename: str,
+        image_regions: list[PdfImageRegion],
+    ) -> list[DocumentNode]:
+        image_nodes: list[DocumentNode] = []
+        for region in image_regions:
+            try:
+                pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=fitz.Rect(*region.bbox), alpha=False)
+                region_nodes = self.visual_analyzer.analyze_cropped_region(
+                    pixmap.tobytes("png"),
+                    f"{filename}-page-{page_index}-region-{region.order}.png",
+                    page_no=page_index,
+                    bbox=region.bbox,
+                    image_region_id=region.image_region_id,
+                )
+                for node in region_nodes:
+                    node.source_meta.setdefault("bbox", region.bbox)
+                    node.source_meta.setdefault("layout_role", region.layout_role)
+                    node.source_meta.setdefault("image_region_id", region.image_region_id)
+                    node.source_meta.setdefault("parser_strategy", "vision_image_region")
+                    node.source_meta.setdefault("modality", "image")
+                    node.source_meta.setdefault("order", region.order)
+                    node.source_meta.setdefault("page_layout", f"page_{page_index}")
+                image_nodes.extend(region_nodes)
+                PDF_IMAGE_REGION_VISION_SUCCESS.inc()
+            except Exception:
+                PDF_IMAGE_REGION_VISION_ERROR.inc()
+        return image_nodes
+
+    def _assemble_page_nodes(
+        self,
+        text_nodes: list[DocumentNode],
+        table_nodes: list[DocumentNode],
+        image_nodes: list[DocumentNode],
+    ) -> list[DocumentNode]:
+        def sort_key(node: DocumentNode) -> tuple[float, float, int]:
+            bbox = node.source_meta.get("bbox")
+            if isinstance(bbox, list) and len(bbox) == 4:
+                return (float(bbox[1]), float(bbox[0]), int(node.source_meta.get("order") or 0))
+            return (10**9, 10**9, int(node.source_meta.get("order") or 0))
+
+        return sorted([*text_nodes, *table_nodes, *image_nodes], key=sort_key)
 
     def _extract_with_pypdf(self, file_bytes: bytes) -> list[DocumentNode]:
         reader = PdfReader(io.BytesIO(file_bytes))
@@ -212,7 +435,11 @@ class PdfParser(BaseParser):
                         level=level,
                         text=section,
                         source_page=page_index,
-                        source_meta={"parser_strategy": "pypdf"},
+                        source_meta={
+                            "parser_strategy": "pypdf",
+                            "modality": "text",
+                            "page_layout": f"page_{page_index}",
+                        },
                     )
                 )
         return nodes
@@ -233,14 +460,20 @@ class PdfParser(BaseParser):
                     rows.append(" | ".join(cells))
             table_text = "\n".join(rows).strip()
             if table_text:
-                # 表格天然是强语义边界，单独产出为 table 节点。
+                bbox = getattr(table, "bbox", None)
                 nodes.append(
                     DocumentNode(
                         node_id=str(uuid.uuid4()),
                         node_type="table",
                         text=table_text,
                         source_page=page_index,
-                        source_meta={"layout_role": "table", "parser_strategy": "pymupdf_table"},
+                        source_meta={
+                            "layout_role": "table",
+                            "parser_strategy": "pymupdf_table",
+                            "bbox": list(bbox) if bbox else None,
+                            "modality": "text",
+                            "page_layout": f"page_{page_index}",
+                        },
                     )
                 )
         return nodes
@@ -257,7 +490,7 @@ class PdfParser(BaseParser):
         if re.match(r"^\s*(?:[-*+]|\d+[.)])\s+", stripped):
             return "list", 0
         first_line = stripped.splitlines()[0].strip()
-        if len(stripped.splitlines()) == 1 and len(first_line) <= 60 and not re.search(r"[。.!?;:：；]", first_line):
+        if len(stripped.splitlines()) == 1 and len(first_line) <= 60 and not re.search(r"[。?!;:：；]", first_line):
             return "title", 1
         return "paragraph", 0
 
@@ -268,24 +501,45 @@ class PdfParser(BaseParser):
             return "footer_zone"
         return "body"
 
+    def _sort_blocks_by_columns(self, blocks) -> list[tuple]:
+        centers = [((float(item[0]) + float(item[2])) / 2.0) for item in blocks if (item[4] or "").strip()]
+        if not centers:
+            return []
+        median_x = sorted(centers)[len(centers) // 2]
+
+        def key(item):
+            x0, y0, x1, _y1, text, *_ = item
+            if not (text or "").strip():
+                return (99, 99, 99)
+            center = (float(x0) + float(x1)) / 2.0
+            column = 0 if center <= median_x else 1
+            return (column, round(float(y0) / 12), float(x0))
+
+        return sorted(blocks, key=key)
+
+    def _overlaps_any(self, bbox: list[float], other_bboxes: list[object]) -> bool:
+        x0, y0, x1, y1 = bbox
+        for other in other_bboxes:
+            if not isinstance(other, list) or len(other) != 4:
+                continue
+            ox0, oy0, ox1, oy1 = other
+            if x0 < ox1 and x1 > ox0 and y0 < oy1 and y1 > oy0:
+                return True
+        return False
+
     def _remove_repeated_page_noise(self, nodes: list[DocumentNode]) -> list[DocumentNode]:
-        by_text: dict[str, set[int]] = defaultdict(set)
+        text_counter: Counter[str] = Counter()
         for node in nodes:
-            if node.source_page is not None:
-                by_text[node.text].add(node.source_page)
+            text = node.text.strip()
+            if text and len(text) <= 100:
+                text_counter[text] += 1
 
-        repeated_texts = {
-            text
-            for text, pages in by_text.items()
-            if len(pages) >= 2 and len(text) <= 80
-        }
-
+        repeated_texts = {text for text, count in text_counter.items() if count >= 3}
         cleaned: list[DocumentNode] = []
         for node in nodes:
             text = node.text.strip()
             layout_role = node.source_meta.get("layout_role")
             is_page_number = bool(self.page_number_re.match(text))
-            # 重复页眉页脚和页码通常是版面噪声，会干扰后续切分和检索。
             is_repeated_margin = text in repeated_texts and layout_role in {None, "header_zone", "footer_zone"}
             if is_page_number or is_repeated_margin:
                 continue
@@ -295,10 +549,18 @@ class PdfParser(BaseParser):
 
 class XlsxParser(BaseParser):
     def parse(self, file_bytes: bytes, filename: str) -> list[DocumentNode]:
-        # Excel 先按 sheet 拆，后续可直接把 sheet 看成章节边界。
         workbook = load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
         nodes: list[DocumentNode] = []
         for sheet in workbook.worksheets:
+            nodes.append(
+                DocumentNode(
+                    node_id=str(uuid.uuid4()),
+                    node_type="title",
+                    level=1,
+                    text=sheet.title,
+                    source_meta={"sheet_name": sheet.title, "parser_strategy": "xlsx_sheet"},
+                )
+            )
             rows = []
             for row in sheet.iter_rows(values_only=True):
                 values = ["" if value is None else str(value).strip() for value in row]
@@ -311,7 +573,7 @@ class XlsxParser(BaseParser):
                         node_id=str(uuid.uuid4()),
                         node_type="table",
                         text=table_text,
-                        source_meta={"sheet_name": sheet.title, "parser_strategy": "xlsx"},
+                        source_meta={"sheet_name": sheet.title, "parser_strategy": "xlsx_table"},
                     )
                 )
         return nodes
@@ -322,6 +584,15 @@ class XlsParser(BaseParser):
         workbook = xlrd.open_workbook(file_contents=file_bytes)
         nodes: list[DocumentNode] = []
         for sheet in workbook.sheets():
+            nodes.append(
+                DocumentNode(
+                    node_id=str(uuid.uuid4()),
+                    node_type="title",
+                    level=1,
+                    text=sheet.name,
+                    source_meta={"sheet_name": sheet.name, "parser_strategy": "xls_sheet"},
+                )
+            )
             rows = []
             for row_index in range(sheet.nrows):
                 values = []
@@ -339,7 +610,7 @@ class XlsParser(BaseParser):
                         node_id=str(uuid.uuid4()),
                         node_type="table",
                         text=table_text,
-                        source_meta={"sheet_name": sheet.name, "parser_strategy": "xls"},
+                        source_meta={"sheet_name": sheet.name, "parser_strategy": "xls_table"},
                     )
                 )
         return nodes

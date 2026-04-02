@@ -1,5 +1,5 @@
 from __future__ import annotations
-"""对外请求/响应模型与内部标准节点模型。"""
+"""Public request/response schemas and the internal document node model."""
 
 from typing import Any, Literal
 
@@ -10,7 +10,8 @@ NodeType = Literal["title", "paragraph", "table", "list", "unknown"]
 
 
 class DocumentNode(BaseModel):
-    """统一的文档中间结构，所有解析器最终都要落到这里。"""
+    """Unified intermediate node produced by every parser."""
+
     node_id: str
     node_type: NodeType
     level: int = 0
@@ -20,7 +21,8 @@ class DocumentNode(BaseModel):
 
 
 class Chunk(BaseModel):
-    """最终返回给调用方的切分结果。"""
+    """Public chunk payload returned by the service."""
+
     chunk_id: str
     text: str
     char_count: int
@@ -43,11 +45,13 @@ class HealthResponse(BaseModel):
 
 
 class ChunkOptions(BaseModel):
-    """切分参数，既可由环境变量提供，也可由请求覆盖。"""
-    target_chunk_chars: int = Field(default=1200, ge=200)
-    min_chunk_chars: int = Field(default=400, ge=50)
-    max_chunk_chars: int = Field(default=1800, ge=200)
-    overlap_chars: int = Field(default=80, ge=0)
+    """Token-first chunking options used by the pipeline."""
+
+    target_chunk_tokens: int = Field(default=300, ge=50)
+    min_chunk_tokens: int = Field(default=100, ge=1)
+    max_chunk_tokens: int = Field(default=450, ge=10)
+    overlap_ratio: float = Field(default=0.0, ge=0.0, le=0.9)
+    overlap_tokens: int = Field(default=0, ge=0)
     similarity_enabled: bool = True
     llm_enabled: bool = False
 

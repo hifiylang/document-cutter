@@ -34,6 +34,43 @@ EXTERNAL_CALL_DURATION = Histogram(
     ["dependency"],
 )
 
+TOKEN_COUNT_COUNTER = Counter(
+    "document_cutter_token_count_calls_total",
+    "Token counting call counts",
+    ["provider", "result"],
+)
+
+TOKEN_COUNT_DURATION = Histogram(
+    "document_cutter_token_count_duration_seconds",
+    "Token counting duration in seconds",
+    ["provider"],
+)
+
+OVERLAP_COUNTER = Counter(
+    "document_cutter_overlap_hits_total",
+    "Overlap application counts during chunk splitting",
+)
+
+RECURSIVE_SPLIT_DEPTH = Histogram(
+    "document_cutter_recursive_split_depth",
+    "Observed recursive split depth",
+)
+
+PDF_IMAGE_REGION_DETECTED = Counter(
+    "pdf_image_region_detected_total",
+    "Detected PDF image regions before local vision parsing",
+)
+
+PDF_IMAGE_REGION_VISION_SUCCESS = Counter(
+    "pdf_image_region_vision_success_total",
+    "Successful local vision parses for PDF image regions",
+)
+
+PDF_IMAGE_REGION_VISION_ERROR = Counter(
+    "pdf_image_region_vision_error_total",
+    "Failed local vision parses for PDF image regions",
+)
+
 
 def metrics_payload() -> tuple[bytes, str]:
     return generate_latest(), CONTENT_TYPE_LATEST

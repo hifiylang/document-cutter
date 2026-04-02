@@ -1,15 +1,18 @@
 from __future__ import annotations
-"""把内部块结构序列化成对外的 ChunkResponse。"""
+"""Serialize internal chunk blocks into the public ChunkResponse schema."""
 
-import math
 import uuid
 from pathlib import Path
 
 from app.models.schemas import Chunk, ChunkResponse, DocumentNode
+from app.services.token_counter import TokenCounter
 
 
 class ChunkSerializer:
-    strategy_version = "v1"
+    strategy_version = "v2"
+
+    def __init__(self, token_counter: TokenCounter) -> None:
+        self.token_counter = token_counter
 
     def serialize(self, filename: str, blocks: list[list[DocumentNode]]) -> ChunkResponse:
         chunks: list[Chunk] = []
@@ -20,7 +23,7 @@ class ChunkSerializer:
             text = "\n".join(node.text for node in block if node.text).strip()
             if not text:
                 continue
-            # metadata 会尽量保留调试和追踪信息，方便后续回溯切分来源。
+
             section_path = self._section_path(block)
             title = section_path[-1] if section_path else None
             page_no = [node.source_page for node in block if node.source_page is not None]
@@ -30,12 +33,15 @@ class ChunkSerializer:
             merge_strategy = next((node.source_meta.get("merge_strategy") for node in block if node.source_meta.get("merge_strategy")), None)
             similarity_score = next((node.source_meta.get("similarity_score") for node in block if node.source_meta.get("similarity_score") is not None), None)
             parser_strategy = sorted({node.source_meta.get("parser_strategy") for node in block if node.source_meta.get("parser_strategy")})
+            offsets = self._collect_offsets(block)
+            source_spans = self._collect_source_spans(block)
+            token_count = self.token_counter.count(text)
             chunks.append(
                 Chunk(
                     chunk_id=str(uuid.uuid4()),
                     text=text,
                     char_count=len(text),
-                    token_estimate=max(1, math.ceil(len(text) / 4)),
+                    token_estimate=token_count,
                     source_node_ids=[node.node_id for node in block],
                     section_path=section_path,
                     metadata={
@@ -49,6 +55,9 @@ class ChunkSerializer:
                         "merge_strategy": merge_strategy,
                         "similarity_score": similarity_score,
                         "parser_strategy": parser_strategy or None,
+                        "token_count": token_count,
+                        "offsets": offsets or None,
+                        "source_spans": source_spans or None,
                     },
                 )
             )
@@ -76,3 +85,34 @@ class ChunkSerializer:
         if "list" in node_types:
             return "list"
         return "mixed"
+
+    def _collect_offsets(self, block: list[DocumentNode]) -> list[dict[str, int]]:
+        offsets: list[dict[str, int]] = []
+        for node in block:
+            start = node.source_meta.get("char_start")
+            end = node.source_meta.get("char_end")
+            if isinstance(start, int) and isinstance(end, int):
+                offsets.append({"start": start, "end": end})
+        return offsets
+
+    def _collect_source_spans(self, block: list[DocumentNode]) -> list[dict[str, object]]:
+        spans: list[dict[str, object]] = []
+        for node in block:
+            span: dict[str, object] = {"node_id": node.node_id}
+            if node.source_page is not None:
+                span["page_no"] = node.source_page
+            if node.source_meta.get("bbox") is not None:
+                span["bbox"] = node.source_meta.get("bbox")
+            if node.source_meta.get("layout_role") is not None:
+                span["layout_role"] = node.source_meta.get("layout_role")
+            if node.source_meta.get("image_region_id") is not None:
+                span["image_region_id"] = node.source_meta.get("image_region_id")
+            if node.source_meta.get("modality") is not None:
+                span["modality"] = node.source_meta.get("modality")
+            if node.source_meta.get("sheet_name") is not None:
+                span["sheet_name"] = node.source_meta.get("sheet_name")
+            if isinstance(node.source_meta.get("char_start"), int) and isinstance(node.source_meta.get("char_end"), int):
+                span["start"] = node.source_meta.get("char_start")
+                span["end"] = node.source_meta.get("char_end")
+            spans.append(span)
+        return spans

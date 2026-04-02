@@ -1,15 +1,17 @@
 from __future__ import annotations
-"""规则、相似度、LLM 三层边界决策引擎。"""
+"""Rule -> similarity -> LLM gray-zone boundary decision engine."""
 
 from app.core.config import settings
 from app.core.metrics import BOUNDARY_DECISION_COUNTER
 from app.models.schemas import ChunkOptions, DocumentNode
 from app.services.llm import LlmBoundaryRefiner
 from app.services.similarity import SemanticSimilarityScorer
+from app.services.token_counter import TokenCounter
 
 
 class BoundaryDecisionEngine:
-    def __init__(self) -> None:
+    def __init__(self, token_counter: TokenCounter) -> None:
+        self.token_counter = token_counter
         self.similarity_scorer = SemanticSimilarityScorer()
         self.llm_refiner = LlmBoundaryRefiner()
 
@@ -21,7 +23,6 @@ class BoundaryDecisionEngine:
         current_meta: dict[str, object] = {}
 
         for next_block in blocks[1:]:
-            # 这里只处理相邻块，避免边界增强演化成“全文重排”。
             decision = self.should_merge(current, next_block, options)
             if decision["merge"]:
                 self._apply_block_metadata(current, current_meta)
@@ -40,7 +41,6 @@ class BoundaryDecisionEngine:
         return refined
 
     def should_merge(self, left_block: list[DocumentNode], right_block: list[DocumentNode], options: ChunkOptions) -> dict[str, object]:
-        # 默认保守：不满足条件时宁可不合并，也不要把不同主题强行拼在一起。
         base = {"merge": False, "strategy": "rule_block", "similarity_score": None}
         if not self._eligible(left_block, right_block, options):
             self._record(base)
@@ -50,7 +50,6 @@ class BoundaryDecisionEngine:
         right_text = self._block_text(right_block)
 
         if not options.similarity_enabled:
-            # 没开相似度时，只在显式启用 LLM 的情况下让模型兜底。
             if options.llm_enabled and self.llm_refiner.decide_merge(left_text, right_text):
                 result = {"merge": True, "strategy": "llm_only", "similarity_score": None}
                 self._record(result)
@@ -61,7 +60,6 @@ class BoundaryDecisionEngine:
 
         try:
             score = self.similarity_scorer.score(left_text, right_text)
-            # 高分和低分都直接拍板，只有灰区才让 LLM 参与。
             if score >= settings.similarity_high_threshold:
                 result = {"merge": True, "strategy": "similarity_high", "similarity_score": round(score, 4)}
                 self._record(result)
@@ -79,7 +77,6 @@ class BoundaryDecisionEngine:
             self._record(result)
             return result
         except Exception:
-            # embedding 服务异常时，不阻塞主链路，按配置决定是否交给 LLM 兜底。
             if options.llm_enabled:
                 merge = self.llm_refiner.decide_merge(left_text, right_text)
                 result = {"merge": merge, "strategy": "llm_fallback", "similarity_score": None}
@@ -93,14 +90,13 @@ class BoundaryDecisionEngine:
             return False
         left_types = {node.node_type for node in left_block}
         right_types = {node.node_type for node in right_block}
-        # 标题、表格是强边界，默认不让增强层跨过去。
         if "title" in left_types or "title" in right_types:
             return False
         if "table" in left_types or "table" in right_types:
             return False
         if self._section_path(left_block) != self._section_path(right_block):
             return False
-        return self._char_count(left_block) + self._char_count(right_block) <= options.max_chunk_chars
+        return self._token_count(left_block) + self._token_count(right_block) <= options.max_chunk_tokens
 
     def _section_path(self, block: list[DocumentNode]) -> list[str]:
         for node in reversed(block):
@@ -112,8 +108,8 @@ class BoundaryDecisionEngine:
     def _block_text(self, block: list[DocumentNode]) -> str:
         return "\n".join(node.text for node in block if node.text)
 
-    def _char_count(self, block: list[DocumentNode]) -> int:
-        return sum(len(node.text) for node in block)
+    def _token_count(self, block: list[DocumentNode]) -> int:
+        return sum(self.token_counter.count(node.text) for node in block if node.text)
 
     def _clone_block(self, block: list[DocumentNode]) -> list[DocumentNode]:
         return [node.model_copy(deep=True) for node in block]

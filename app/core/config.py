@@ -4,6 +4,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     """集中管理运行配置，统一从环境变量读取。"""
+
     model_config = ConfigDict(env_file=".env", env_prefix="CUTTER_")
 
     app_name: str = "semantic-document-cutter"
@@ -15,10 +16,16 @@ class Settings(BaseSettings):
     rate_limit_window_seconds: int = Field(default=60, ge=1)
 
     # Chunk rules
-    target_chunk_chars: int = Field(default=1200, ge=200)
-    min_chunk_chars: int = Field(default=400, ge=50)
-    max_chunk_chars: int = Field(default=1800, ge=200)
-    overlap_chars: int = Field(default=80, ge=0)
+    target_chunk_tokens: int = Field(default=300, ge=50)
+    min_chunk_tokens: int = Field(default=100, ge=1)
+    max_chunk_tokens: int = Field(default=450, ge=10)
+    overlap_ratio: float = Field(default=0.0, ge=0.0, le=0.9)
+    overlap_tokens: int = Field(default=0, ge=0)
+    token_counter_provider: str = "heuristic"
+    token_counter_endpoint: str | None = None
+    token_counter_timeout_seconds: float = Field(default=10.0, gt=0)
+
+    # Similarity
     similarity_enabled: bool = True
     similarity_high_threshold: float = Field(default=0.88, ge=-1.0, le=1.0)
     similarity_low_threshold: float = Field(default=0.72, ge=-1.0, le=1.0)

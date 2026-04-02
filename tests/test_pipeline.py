@@ -29,11 +29,14 @@ def test_xlsx_parser_extracts_each_sheet_as_table_node() -> None:
     parser = get_parser("demo.xlsx")
     nodes = parser.parse(stream.getvalue(), "demo.xlsx")
 
-    assert len(nodes) == 2
-    assert all(node.node_type == "table" for node in nodes)
-    assert nodes[0].source_meta["sheet_name"] == "SheetA"
-    assert "Field | Value" in nodes[0].text
-    assert nodes[1].source_meta["sheet_name"] == "SheetB"
+    assert len(nodes) == 4
+    assert nodes[0].node_type == "title"
+    assert nodes[1].node_type == "table"
+    assert nodes[0].text == "SheetA"
+    assert nodes[1].source_meta["sheet_name"] == "SheetA"
+    assert "Field | Value" in nodes[1].text
+    assert nodes[2].text == "SheetB"
+    assert nodes[3].source_meta["sheet_name"] == "SheetB"
 
 
 def test_xls_parser_extracts_sheet_as_table_node() -> None:
@@ -49,10 +52,12 @@ def test_xls_parser_extracts_sheet_as_table_node() -> None:
     parser = get_parser("demo.xls")
     nodes = parser.parse(stream.getvalue(), "demo.xls")
 
-    assert len(nodes) == 1
-    assert nodes[0].node_type == "table"
-    assert nodes[0].source_meta["sheet_name"] == "Sheet1"
-    assert "Field | Value" in nodes[0].text
+    assert len(nodes) == 2
+    assert nodes[0].node_type == "title"
+    assert nodes[1].node_type == "table"
+    assert nodes[0].text == "Sheet1"
+    assert nodes[1].source_meta["sheet_name"] == "Sheet1"
+    assert "Field | Value" in nodes[1].text
 
 
 def test_pipeline_keeps_content_in_the_same_section() -> None:
@@ -78,14 +83,14 @@ def test_pipeline_keeps_content_in_the_same_section() -> None:
 
 
 def test_pipeline_splits_oversized_text_without_cutting_everything_to_one_chunk() -> None:
-    large_paragraph = "This is a very long paragraph. " * ((settings.max_chunk_chars // 8) + 120)
+    large_paragraph = "This is a very long paragraph. " * ((settings.max_chunk_tokens * 3) + 40)
     payload = f"# Large Document\n\n{large_paragraph}"
 
     pipeline = DocumentChunkPipeline()
     result = pipeline.chunk_bytes(payload.encode("utf-8"), "large.md")
 
     assert result.total_chunks >= 2
-    assert all(chunk.char_count <= settings.max_chunk_chars + settings.overlap_chars for chunk in result.chunks)
+    assert all(chunk.metadata["token_count"] <= settings.max_chunk_tokens for chunk in result.chunks)
 
 
 def test_pipeline_llm_refiner_can_merge_adjacent_blocks() -> None:
@@ -105,7 +110,7 @@ def test_pipeline_llm_refiner_can_merge_adjacent_blocks() -> None:
     result = pipeline.chunk_bytes(
         payload.encode("utf-8"),
         "merge.md",
-        ChunkOptions(llm_enabled=True, min_chunk_chars=50, target_chunk_chars=200, max_chunk_chars=500),
+        ChunkOptions(llm_enabled=True, min_chunk_tokens=20, target_chunk_tokens=80, max_chunk_tokens=160),
     )
     LlmBoundaryRefiner.decide_merge = original
 
@@ -135,7 +140,7 @@ def test_pipeline_llm_refiner_falls_back_to_rule_blocks_on_error() -> None:
     result = pipeline.chunk_bytes(
         payload.encode("utf-8"),
         "fallback.md",
-        ChunkOptions(llm_enabled=True, min_chunk_chars=50, target_chunk_chars=200, max_chunk_chars=500),
+        ChunkOptions(llm_enabled=True, min_chunk_tokens=20, target_chunk_tokens=80, max_chunk_tokens=160),
     )
     LlmBoundaryRefiner.decide_merge = original
 
@@ -228,7 +233,7 @@ def test_boundary_engine_merges_when_similarity_is_high() -> None:
 
     original_score = engine.similarity_scorer.score
     engine.similarity_scorer.score = lambda a, b: 0.95
-    decision = engine.should_merge(left, right, ChunkOptions(max_chunk_chars=500, min_chunk_chars=50, llm_enabled=True))
+    decision = engine.should_merge(left, right, ChunkOptions(max_chunk_tokens=160, min_chunk_tokens=20, llm_enabled=True))
     engine.similarity_scorer.score = original_score
 
     assert decision["merge"] is True
@@ -243,7 +248,7 @@ def test_boundary_engine_keeps_when_similarity_is_low() -> None:
 
     original_score = engine.similarity_scorer.score
     engine.similarity_scorer.score = lambda a, b: 0.41
-    decision = engine.should_merge(left, right, ChunkOptions(max_chunk_chars=500, min_chunk_chars=50, llm_enabled=True))
+    decision = engine.should_merge(left, right, ChunkOptions(max_chunk_tokens=160, min_chunk_tokens=20, llm_enabled=True))
     engine.similarity_scorer.score = original_score
 
     assert decision["merge"] is False
@@ -260,7 +265,7 @@ def test_boundary_engine_uses_llm_for_gray_zone() -> None:
     original_merge = engine.llm_refiner.decide_merge
     engine.similarity_scorer.score = lambda a, b: 0.8
     engine.llm_refiner.decide_merge = lambda a, b: True
-    decision = engine.should_merge(left, right, ChunkOptions(max_chunk_chars=500, min_chunk_chars=50, llm_enabled=True))
+    decision = engine.should_merge(left, right, ChunkOptions(max_chunk_tokens=160, min_chunk_tokens=20, llm_enabled=True))
     engine.similarity_scorer.score = original_score
     engine.llm_refiner.decide_merge = original_merge
 
@@ -282,7 +287,7 @@ def test_boundary_engine_falls_back_when_similarity_service_fails() -> None:
 
     engine.similarity_scorer.score = broken_score
     engine.llm_refiner.decide_merge = lambda a, b: False
-    decision = engine.should_merge(left, right, ChunkOptions(max_chunk_chars=500, min_chunk_chars=50, llm_enabled=True))
+    decision = engine.should_merge(left, right, ChunkOptions(max_chunk_tokens=160, min_chunk_tokens=20, llm_enabled=True))
     engine.similarity_scorer.score = original_score
     engine.llm_refiner.decide_merge = original_merge
 
