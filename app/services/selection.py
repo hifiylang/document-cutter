@@ -21,21 +21,20 @@ class RuntimeSelection:
 
 
 class RuntimeSelector:
-    """根据请求级参数和全局配置计算本次运行的最终选择。"""
+    """根据服务端配置计算本次运行的最终模型与 embedding 选择。"""
 
     def resolve(self, options: ChunkOptions | None = None) -> RuntimeSelection:
         return RuntimeSelection(
-            text_model=self._pick(options, "text_model", settings.text_model),
-            flash_model=self._pick(options, "flash_model", settings.flash_model)
-            or self._pick(options, "text_model", settings.text_model),
-            vision_model=self._pick(options, "vision_model", settings.vision_model),
-            embedding_base_url=self._pick(options, "embedding_base_url", settings.embedding_base_url),
-            embedding_model=self._pick(options, "embedding_model", settings.embedding_model),
-            embedding_api_key=self._pick(options, "embedding_api_key", settings.embedding_api_key),
+            text_model=settings.text_model,
+            flash_model=settings.flash_model or settings.text_model,
+            vision_model=settings.vision_model,
+            embedding_base_url=settings.embedding_base_url,
+            embedding_model=settings.embedding_model,
+            embedding_api_key=settings.embedding_api_key,
         )
 
     def to_response_metadata(self, options: ChunkOptions | None = None) -> dict[str, object]:
-        """把本次实际生效的选择转成响应可展示的结构。"""
+        """把本次实际生效的服务端选择转成响应可展示的结构。"""
 
         selected = self.resolve(options)
         return {
@@ -47,10 +46,3 @@ class RuntimeSelector:
                 "embedding_model": selected.embedding_model,
             }
         }
-
-    def _pick(self, options: ChunkOptions | None, field_name: str, default: str | None) -> str | None:
-        if options is not None:
-            value = getattr(options, field_name, None)
-            if value:
-                return value
-        return default

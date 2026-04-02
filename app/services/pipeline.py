@@ -62,12 +62,6 @@ class DocumentChunkPipeline:
             overlap_tokens=settings.overlap_tokens,
             similarity_enabled=settings.similarity_enabled,
             llm_enabled=settings.llm_enabled,
-            text_model=settings.text_model,
-            flash_model=settings.flash_model,
-            vision_model=settings.vision_model,
-            embedding_base_url=settings.embedding_base_url,
-            embedding_model=settings.embedding_model,
-            embedding_api_key=settings.embedding_api_key,
         )
         self._validate_file(filename, file_bytes)
         nodes = self._extract_nodes(file_bytes, filename, options)

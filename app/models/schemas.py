@@ -51,7 +51,7 @@ class HealthResponse(BaseModel):
 
 
 class ChunkOptions(BaseModel):
-    """主链路使用的 token-first 切分参数和运行时覆盖项。"""
+    """主链路使用的 token-first 切分参数。"""
 
     target_chunk_tokens: int = Field(default=300, ge=50)
     min_chunk_tokens: int = Field(default=100, ge=1)
@@ -60,14 +60,6 @@ class ChunkOptions(BaseModel):
     overlap_tokens: int = Field(default=0, ge=0)
     similarity_enabled: bool = True
     llm_enabled: bool = False
-
-    # 单次请求可覆盖的模型选择项。
-    text_model: str | None = None
-    flash_model: str | None = None
-    vision_model: str | None = None
-    embedding_base_url: str | None = None
-    embedding_model: str | None = None
-    embedding_api_key: str | None = None
 
 
 class ChunkByUrlRequest(BaseModel):

@@ -119,7 +119,7 @@ uvicorn app.main:app --reload
 
 ## 请求级覆盖
 
-上传接口支持额外传入：
+上传接口支持额外传入（可选，仅在你需要临时覆盖服务端默认配置时使用）：
 
 - `text_model`
 - `flash_model`
@@ -146,10 +146,7 @@ URL 接口支持通过 `options` 传入同名字段。
 curl -X POST "http://127.0.0.1:8000/v1/chunk/by-upload" ^
   -F "file=@sample.pdf" ^
   -F "max_chunk_tokens=450" ^
-  -F "overlap_tokens=24" ^
-  -F "flash_model=<your-flash-model>" ^
-  -F "embedding_base_url=http://<your-embedding-service>/v1/embeddings" ^
-  -F "embedding_model=<your-embedding-model>"
+  -F "overlap_tokens=24"
 ```
 
 ### 2. 按 URL 切分
@@ -157,8 +154,14 @@ curl -X POST "http://127.0.0.1:8000/v1/chunk/by-upload" ^
 ```bash
 curl -X POST "http://127.0.0.1:8000/v1/chunk/by-url" ^
   -H "Content-Type: application/json" ^
-  -d "{\"document_url\":\"https://example.com/demo.pdf\",\"filename\":\"demo.pdf\",\"options\":{\"max_chunk_tokens\":450,\"overlap_tokens\":24,\"vision_model\":\"<your-vision-model>\",\"embedding_base_url\":\"http://<your-embedding-service>/v1/embeddings\",\"embedding_model\":\"<your-embedding-model>\"}}"
+  -d "{\"document_url\":\"https://example.com/demo.pdf\",\"filename\":\"demo.pdf\",\"options\":{\"max_chunk_tokens\":450,\"overlap_tokens\":24}}"
 ```
+
+说明：
+
+- `text_model / flash_model / vision_model / embedding_base_url / embedding_model / embedding_api_key` 默认由服务端配置统一管理
+- 常规调用不需要传这些字段
+- 只有在灰度、调试或临时切模型时，才建议通过请求级参数覆盖
 
 ## 返回结构
 

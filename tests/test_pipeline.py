@@ -299,25 +299,16 @@ def test_boundary_engine_falls_back_when_similarity_service_fails() -> None:
     assert decision["similarity_score"] is None
 
 
-def test_runtime_selector_prefers_request_level_models() -> None:
+def test_runtime_selector_uses_service_side_models() -> None:
     selector = RuntimeSelector()
-    selection = selector.resolve(
-        ChunkOptions(
-            text_model="text-override",
-            flash_model="flash-override",
-            vision_model="vision-override",
-            embedding_base_url="http://embedding.service/v1/embeddings",
-            embedding_model="embedding-override",
-            embedding_api_key="secret",
-        )
-    )
+    selection = selector.resolve(ChunkOptions())
 
-    assert selection.text_model == "text-override"
-    assert selection.flash_model == "flash-override"
-    assert selection.vision_model == "vision-override"
-    assert selection.embedding_base_url == "http://embedding.service/v1/embeddings"
-    assert selection.embedding_model == "embedding-override"
-    assert selection.embedding_api_key == "secret"
+    assert selection.text_model == settings.text_model
+    assert selection.flash_model == (settings.flash_model or settings.text_model)
+    assert selection.vision_model == settings.vision_model
+    assert selection.embedding_base_url == settings.embedding_base_url
+    assert selection.embedding_model == settings.embedding_model
+    assert selection.embedding_api_key == settings.embedding_api_key
 
 
 def test_token_counter_uses_cache_for_duplicate_text() -> None:

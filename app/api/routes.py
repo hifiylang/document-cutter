@@ -45,12 +45,6 @@ async def chunk_by_upload(
     overlap_tokens: int | None = Form(default=None),
     similarity_enabled: bool | None = Form(default=None),
     llm_enabled: bool | None = Form(default=None),
-    text_model: str | None = Form(default=None),
-    flash_model: str | None = Form(default=None),
-    vision_model: str | None = Form(default=None),
-    embedding_base_url: str | None = Form(default=None),
-    embedding_model: str | None = Form(default=None),
-    embedding_api_key: str | None = Form(default=None),
 ) -> ChunkResponse:
     """上传文件并返回切分结果。"""
 
@@ -64,12 +58,6 @@ async def chunk_by_upload(
             overlap_tokens=settings.overlap_tokens if overlap_tokens is None else overlap_tokens,
             similarity_enabled=settings.similarity_enabled if similarity_enabled is None else similarity_enabled,
             llm_enabled=settings.llm_enabled if llm_enabled is None else llm_enabled,
-            text_model=text_model,
-            flash_model=flash_model,
-            vision_model=vision_model,
-            embedding_base_url=embedding_base_url,
-            embedding_model=embedding_model,
-            embedding_api_key=embedding_api_key,
         )
         return await _run_with_timeout(
             pipeline.chunk_bytes,

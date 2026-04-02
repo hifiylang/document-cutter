@@ -20,7 +20,6 @@ client = TestClient(app)
 
 
 def build_xlsx_bytes() -> bytes:
-    # 构造最小可用 Excel 样本，避免测试依赖外部文件。
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Product Params"
@@ -253,24 +252,17 @@ def test_chunk_by_upload_exposes_similarity_metadata_when_boundary_engine_runs()
     assert merged_chunk["metadata"]["similarity_score"] == 0.93
 
 
-def test_chunk_by_upload_allows_request_level_model_overrides() -> None:
+def test_chunk_by_upload_exposes_service_side_selected_options() -> None:
     payload = "# Guide\n\nSimple content."
     response = client.post(
         "/v1/chunk/by-upload",
-        data={
-            "text_model": "text-override",
-            "flash_model": "flash-override",
-            "vision_model": "vision-override",
-            "embedding_base_url": "http://embedding.service/v1/embeddings",
-            "embedding_model": "embedding-override",
-        },
         files={"file": ("sample.md", payload.encode("utf-8"), "text/markdown")},
     )
 
     assert response.status_code == 200
     selected = response.json()["metadata"]["selected_options"]
-    assert selected["text_model"] == "text-override"
-    assert selected["flash_model"] == "flash-override"
-    assert selected["vision_model"] == "vision-override"
-    assert selected["embedding_base_url"] == "http://embedding.service/v1/embeddings"
-    assert selected["embedding_model"] == "embedding-override"
+    assert "text_model" in selected
+    assert "flash_model" in selected
+    assert "vision_model" in selected
+    assert "embedding_base_url" in selected
+    assert "embedding_model" in selected
