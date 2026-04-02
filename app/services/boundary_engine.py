@@ -1,6 +1,6 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
-"""规则、相似度与 LLM 组成的边界决策引擎。"""
+"""规则、相似度和 LLM 组成的边界决策引擎。"""
 
 from app.core.config import settings
 from app.core.metrics import BOUNDARY_DECISION_COUNTER
@@ -65,8 +65,8 @@ class BoundaryDecisionEngine:
         left_text = block_text(left_block)
         right_text = block_text(right_block)
 
-        if not options.similarity_enabled:
-            if options.llm_enabled and self.llm_refiner.decide_merge(left_text, right_text, options):
+        if not settings.similarity_enabled:
+            if settings.llm_enabled and self.llm_refiner.decide_merge(left_text, right_text, options):
                 result = {"merge": True, "strategy": "llm_only", "similarity_score": None}
                 self._record(result)
                 return result
@@ -84,7 +84,7 @@ class BoundaryDecisionEngine:
                 result = {"merge": False, "strategy": "similarity_low", "similarity_score": round(score, 4)}
                 self._record(result)
                 return result
-            if options.llm_enabled:
+            if settings.llm_enabled:
                 merge = self.llm_refiner.decide_merge(left_text, right_text, options)
                 result = {"merge": merge, "strategy": "llm_gray", "similarity_score": round(score, 4)}
                 self._record(result)
@@ -93,7 +93,7 @@ class BoundaryDecisionEngine:
             self._record(result)
             return result
         except Exception:
-            if options.llm_enabled:
+            if settings.llm_enabled:
                 merge = self.llm_refiner.decide_merge(left_text, right_text, options)
                 result = {"merge": merge, "strategy": "llm_fallback", "similarity_score": None}
                 self._record(result)

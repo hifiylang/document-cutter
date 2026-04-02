@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 """API 集成测试，覆盖上传、URL、限流、超时和返回结构。"""
 
@@ -90,8 +90,9 @@ def test_chunk_by_upload_supports_image_understanding() -> None:
 def test_chunk_by_url_downloads_and_processes_document() -> None:
     original = DocumentChunkPipeline._download_url
 
-    def fake_download(self: DocumentChunkPipeline, document_url: str) -> bytes:
+    def fake_download(self: DocumentChunkPipeline, document_url: str, filename: str) -> bytes:
         assert document_url == "https://example.com/demo.md"
+        assert filename == "demo.md"
         return b"# Demo\n\nThis is a remote document."
 
     DocumentChunkPipeline._download_url = fake_download
@@ -110,6 +111,19 @@ def test_chunk_by_url_downloads_and_processes_document() -> None:
     assert body["total_chunks"] >= 1
 
 
+def test_chunk_by_url_rejects_non_http_scheme() -> None:
+    response = client.post(
+        "/v1/chunk/by-url",
+        json={
+            "document_url": "file:///tmp/demo.md",
+            "filename": "demo.md",
+        },
+    )
+
+    assert response.status_code == 502
+    assert "http and https" in response.json()["detail"]
+
+
 def test_chunk_by_upload_rejects_unsupported_type() -> None:
     response = client.post(
         "/v1/chunk/by-upload",
@@ -123,7 +137,7 @@ def test_chunk_by_upload_rejects_unsupported_type() -> None:
 def test_chunk_by_url_returns_bad_gateway_when_download_fails() -> None:
     original = DocumentChunkPipeline._download_url
 
-    def fake_download(self: DocumentChunkPipeline, document_url: str) -> bytes:
+    def fake_download(self: DocumentChunkPipeline, document_url: str, filename: str) -> bytes:
         raise RuntimeError("boom")
 
     DocumentChunkPipeline._download_url = fake_download
@@ -150,7 +164,7 @@ def test_metrics_exposes_http_counters() -> None:
 def test_rate_limit_returns_429_when_exceeded() -> None:
     original = DocumentChunkPipeline._download_url
 
-    def fake_download(self: DocumentChunkPipeline, document_url: str) -> bytes:
+    def fake_download(self: DocumentChunkPipeline, document_url: str, filename: str) -> bytes:
         return b"# Demo\n\nThis is a remote document."
 
     DocumentChunkPipeline._download_url = fake_download

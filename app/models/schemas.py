@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 """对外请求响应模型，以及内部统一节点模型。"""
 
@@ -58,8 +58,6 @@ class ChunkOptions(BaseModel):
     max_chunk_tokens: int = Field(default=450, ge=10)
     overlap_ratio: float = Field(default=0.0, ge=0.0, le=0.9)
     overlap_tokens: int = Field(default=0, ge=0)
-    similarity_enabled: bool = True
-    llm_enabled: bool = False
 
 
 class ChunkByUrlRequest(BaseModel):

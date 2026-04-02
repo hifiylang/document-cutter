@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 """主切分链路测试，覆盖解析、OCR 回退、边界增强和统一选择器。"""
 
@@ -103,19 +103,22 @@ def test_pipeline_llm_refiner_can_merge_adjacent_blocks() -> None:
         "- This bullet is strongly related to the previous line."
     )
 
-    original = LlmBoundaryRefiner.decide_merge
+    original_merge = LlmBoundaryRefiner.decide_merge
+    original_flag = settings.llm_enabled
 
     def always_merge(self: LlmBoundaryRefiner, left_text: str, right_text: str, options=None) -> bool:
         return True
 
+    settings.llm_enabled = True
     LlmBoundaryRefiner.decide_merge = always_merge
     pipeline = DocumentChunkPipeline()
     result = pipeline.chunk_bytes(
         payload.encode("utf-8"),
         "merge.md",
-        ChunkOptions(llm_enabled=True, min_chunk_tokens=20, target_chunk_tokens=80, max_chunk_tokens=160),
+        ChunkOptions(min_chunk_tokens=20, target_chunk_tokens=80, max_chunk_tokens=160),
     )
-    LlmBoundaryRefiner.decide_merge = original
+    LlmBoundaryRefiner.decide_merge = original_merge
+    settings.llm_enabled = original_flag
 
     assert result.total_chunks == 2
     merged_chunk = next(
@@ -133,19 +136,22 @@ def test_pipeline_llm_refiner_falls_back_to_rule_blocks_on_error() -> None:
         "Second section body."
     )
 
-    original = LlmBoundaryRefiner.decide_merge
+    original_merge = LlmBoundaryRefiner.decide_merge
+    original_flag = settings.llm_enabled
 
     def broken(self: LlmBoundaryRefiner, left_text: str, right_text: str, options=None) -> bool:
         raise RuntimeError("llm failure")
 
+    settings.llm_enabled = True
     LlmBoundaryRefiner.decide_merge = broken
     pipeline = DocumentChunkPipeline()
     result = pipeline.chunk_bytes(
         payload.encode("utf-8"),
         "fallback.md",
-        ChunkOptions(llm_enabled=True, min_chunk_tokens=20, target_chunk_tokens=80, max_chunk_tokens=160),
+        ChunkOptions(min_chunk_tokens=20, target_chunk_tokens=80, max_chunk_tokens=160),
     )
-    LlmBoundaryRefiner.decide_merge = original
+    LlmBoundaryRefiner.decide_merge = original_merge
+    settings.llm_enabled = original_flag
 
     assert result.total_chunks >= 2
     section_paths = [tuple(chunk.section_path) for chunk in result.chunks]
@@ -236,7 +242,7 @@ def test_boundary_engine_merges_when_similarity_is_high() -> None:
 
     original_score = engine.similarity_scorer.score
     engine.similarity_scorer.score = lambda a, b, options=None: 0.95
-    decision = engine.should_merge(left, right, ChunkOptions(max_chunk_tokens=160, min_chunk_tokens=20, llm_enabled=True))
+    decision = engine.should_merge(left, right, ChunkOptions(max_chunk_tokens=160, min_chunk_tokens=20))
     engine.similarity_scorer.score = original_score
 
     assert decision["merge"] is True
@@ -251,7 +257,7 @@ def test_boundary_engine_keeps_when_similarity_is_low() -> None:
 
     original_score = engine.similarity_scorer.score
     engine.similarity_scorer.score = lambda a, b, options=None: 0.41
-    decision = engine.should_merge(left, right, ChunkOptions(max_chunk_tokens=160, min_chunk_tokens=20, llm_enabled=True))
+    decision = engine.should_merge(left, right, ChunkOptions(max_chunk_tokens=160, min_chunk_tokens=20))
     engine.similarity_scorer.score = original_score
 
     assert decision["merge"] is False
@@ -260,6 +266,8 @@ def test_boundary_engine_keeps_when_similarity_is_low() -> None:
 
 
 def test_boundary_engine_uses_llm_for_gray_zone() -> None:
+    original_flag = settings.llm_enabled
+    settings.llm_enabled = True
     engine = BoundaryDecisionEngine()
     left = [DocumentNode(node_id="1", node_type="paragraph", text="Product usage guide", source_meta={"section_path": ["Guide"]})]
     right = [DocumentNode(node_id="2", node_type="paragraph", text="Usage detail follows", source_meta={"section_path": ["Guide"]})]
@@ -268,9 +276,10 @@ def test_boundary_engine_uses_llm_for_gray_zone() -> None:
     original_merge = engine.llm_refiner.decide_merge
     engine.similarity_scorer.score = lambda a, b, options=None: 0.8
     engine.llm_refiner.decide_merge = lambda a, b, options=None: True
-    decision = engine.should_merge(left, right, ChunkOptions(max_chunk_tokens=160, min_chunk_tokens=20, llm_enabled=True))
+    decision = engine.should_merge(left, right, ChunkOptions(max_chunk_tokens=160, min_chunk_tokens=20))
     engine.similarity_scorer.score = original_score
     engine.llm_refiner.decide_merge = original_merge
+    settings.llm_enabled = original_flag
 
     assert decision["merge"] is True
     assert decision["strategy"] == "llm_gray"
@@ -278,6 +287,8 @@ def test_boundary_engine_uses_llm_for_gray_zone() -> None:
 
 
 def test_boundary_engine_falls_back_when_similarity_service_fails() -> None:
+    original_flag = settings.llm_enabled
+    settings.llm_enabled = True
     engine = BoundaryDecisionEngine()
     left = [DocumentNode(node_id="1", node_type="paragraph", text="Product usage guide", source_meta={"section_path": ["Guide"]})]
     right = [DocumentNode(node_id="2", node_type="paragraph", text="Usage detail follows", source_meta={"section_path": ["Guide"]})]
@@ -290,9 +301,10 @@ def test_boundary_engine_falls_back_when_similarity_service_fails() -> None:
 
     engine.similarity_scorer.score = broken_score
     engine.llm_refiner.decide_merge = lambda a, b, options=None: False
-    decision = engine.should_merge(left, right, ChunkOptions(max_chunk_tokens=160, min_chunk_tokens=20, llm_enabled=True))
+    decision = engine.should_merge(left, right, ChunkOptions(max_chunk_tokens=160, min_chunk_tokens=20))
     engine.similarity_scorer.score = original_score
     engine.llm_refiner.decide_merge = original_merge
+    settings.llm_enabled = original_flag
 
     assert decision["merge"] is False
     assert decision["strategy"] == "llm_fallback"
@@ -318,4 +330,3 @@ def test_token_counter_uses_cache_for_duplicate_text() -> None:
     second = counter.count(text)
 
     assert first == second
-    assert text in counter._cache

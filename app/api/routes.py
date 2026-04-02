@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 """文档切分服务的对外 HTTP 路由。"""
 
@@ -43,8 +43,6 @@ async def chunk_by_upload(
     max_chunk_tokens: int | None = Form(default=None),
     overlap_ratio: float | None = Form(default=None),
     overlap_tokens: int | None = Form(default=None),
-    similarity_enabled: bool | None = Form(default=None),
-    llm_enabled: bool | None = Form(default=None),
 ) -> ChunkResponse:
     """上传文件并返回切分结果。"""
 
@@ -56,8 +54,6 @@ async def chunk_by_upload(
             max_chunk_tokens=settings.max_chunk_tokens if max_chunk_tokens is None else max_chunk_tokens,
             overlap_ratio=settings.overlap_ratio if overlap_ratio is None else overlap_ratio,
             overlap_tokens=settings.overlap_tokens if overlap_tokens is None else overlap_tokens,
-            similarity_enabled=settings.similarity_enabled if similarity_enabled is None else similarity_enabled,
-            llm_enabled=settings.llm_enabled if llm_enabled is None else llm_enabled,
         )
         return await _run_with_timeout(
             pipeline.chunk_bytes,

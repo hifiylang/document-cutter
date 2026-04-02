@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     debug: bool = False
     http_timeout_seconds: float = Field(default=20.0, gt=0)
     max_upload_mb: int = Field(default=20, ge=1)
+    download_size_guard_factor: int = Field(default=2, ge=1)
+    download_allowed_hosts: str | None = None
     request_timeout_seconds: float = Field(default=30.0, gt=0)
     rate_limit_requests: int = Field(default=10, ge=1)
     rate_limit_window_seconds: int = Field(default=60, ge=1)
