@@ -21,27 +21,68 @@ class DocumentNode(BaseModel):
     source_meta: dict[str, Any] = Field(default_factory=dict)
 
 
+class ChunkMetadata(BaseModel):
+    """对外暴露的最小 chunk 元信息。"""
+
+    chunk_type: str
+    page_no: list[int] = Field(default_factory=list)
+
+
 class Chunk(BaseModel):
-    """服务对外返回的标准切分结果。"""
+    """内部切分结果结构。"""
 
     chunk_id: str
     text: str
-    char_count: int
-    token_estimate: int
-    source_node_ids: list[str]
     section_path: list[str] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata: ChunkMetadata
 
 
 class ChunkResponse(BaseModel):
-    """文档切分接口的完整响应。"""
+    """内部切分接口的完整响应。"""
 
     document_id: str
     filename: str
-    total_nodes: int
     total_chunks: int
     chunks: list[Chunk]
-    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class StoredDocumentResponse(BaseModel):
+    """文档入库后的摘要响应。"""
+
+    document_id: str
+    filename: str
+    status: str
+    total_chunks: int
+
+
+class ChunkListItem(BaseModel):
+    """分页列表中的 chunk 预览。"""
+
+    chunk_id: str
+    preview_text: str
+    section_path: list[str] = Field(default_factory=list)
+    metadata: ChunkMetadata
+
+
+class ChunkListResponse(BaseModel):
+    """文档 chunk 分页列表。"""
+
+    document_id: str
+    filename: str
+    total_chunks: int
+    page: int
+    page_size: int
+    items: list[ChunkListItem]
+
+
+class ChunkDetailResponse(BaseModel):
+    """单个 chunk 的详情响应。"""
+
+    chunk_id: str
+    document_id: str
+    text: str
+    section_path: list[str] = Field(default_factory=list)
+    metadata: ChunkMetadata
 
 
 class HealthResponse(BaseModel):

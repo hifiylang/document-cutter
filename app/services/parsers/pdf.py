@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 """PDF 解析器，负责正文、表格、图片区域与页内重排。"""
 
@@ -29,9 +29,13 @@ logger = logging.getLogger(__name__)
 
 
 class PdfParser(BaseParser):
-    """优先用版面解析提取 PDF，必要时补充图片区域视觉识别。"""
+    """优先使用版面解析提取 PDF，必要时补充图片区域视觉识别。"""
 
     page_number_re = re.compile(r"^(?:page\s*\d+|第\s*\d+\s*页|\d+\s*/\s*\d+)$", re.IGNORECASE)
+    numbered_heading_re = re.compile(
+        r"^(?:第[一二三四五六七八九十百千万\d]+[章节部分篇]|[一二三四五六七八九十]+[、.]|\d+(?:\.\d+){0,3}[、.]?)\s*\S+"
+    )
+    list_re = re.compile(r"^\s*(?:[-*+•●]|\d+[.)]|（\d+）)\s+")
 
     def __init__(self) -> None:
         self.visual_analyzer = VisualDocumentAnalyzer()
@@ -54,6 +58,7 @@ class PdfParser(BaseParser):
             table_bboxes = [table.source_meta.get("bbox") for table in page_tables if table.source_meta.get("bbox")]
             page_regions = self._extract_image_regions(page, page_index, table_bboxes)
             page_text_nodes = self._extract_text_nodes(page_index, page_height, text_blocks, table_bboxes)
+            page_text_nodes = self._merge_adjacent_text_nodes(page_text_nodes)
             page_image_nodes = self._extract_image_nodes(page, page_index, filename, page_regions)
             page_nodes = self._assemble_page_nodes(page_text_nodes, page_tables, page_image_nodes)
             logger.info(
@@ -101,6 +106,80 @@ class PdfParser(BaseParser):
                 )
             )
         return nodes
+
+    def _merge_adjacent_text_nodes(self, nodes: list[DocumentNode]) -> list[DocumentNode]:
+        """把同一列、同一段落的相邻文本块合并回自然段。"""
+
+        if not nodes:
+            return []
+
+        merged: list[DocumentNode] = []
+        current = nodes[0].model_copy(deep=True)
+        for next_node in nodes[1:]:
+            if self._should_merge_text_nodes(current, next_node):
+                current.text = self._join_text(current.text, next_node.text)
+                current.source_meta["bbox"] = self._union_bbox(
+                    current.source_meta.get("bbox"),
+                    next_node.source_meta.get("bbox"),
+                )
+                continue
+            merged.append(current)
+            current = next_node.model_copy(deep=True)
+        merged.append(current)
+        return merged
+
+    def _should_merge_text_nodes(self, current: DocumentNode, next_node: DocumentNode) -> bool:
+        if current.node_type != "paragraph" or next_node.node_type != "paragraph":
+            return False
+        if current.source_page != next_node.source_page:
+            return False
+        if current.source_meta.get("layout_role") != "body" or next_node.source_meta.get("layout_role") != "body":
+            return False
+
+        current_bbox = current.source_meta.get("bbox")
+        next_bbox = next_node.source_meta.get("bbox")
+        if not (isinstance(current_bbox, list) and isinstance(next_bbox, list) and len(current_bbox) == 4 and len(next_bbox) == 4):
+            return False
+
+        gap = float(next_bbox[1]) - float(current_bbox[3])
+        if gap < -2:
+            return False
+
+        current_height = max(float(current_bbox[3]) - float(current_bbox[1]), 1.0)
+        next_height = max(float(next_bbox[3]) - float(next_bbox[1]), 1.0)
+        allowed_gap = max(18.0, min(current_height, next_height) * 1.6)
+        if gap > allowed_gap:
+            return False
+
+        left_aligned = abs(float(current_bbox[0]) - float(next_bbox[0])) <= 18.0
+        width_similar = abs(float(current_bbox[2]) - float(next_bbox[2])) <= 48.0
+        if not left_aligned and not width_similar:
+            return False
+
+        current_text = current.text.strip()
+        next_text = next_node.text.strip()
+        if not current_text or not next_text:
+            return False
+        if self._looks_like_heading(next_text):
+            return False
+        if self.list_re.match(next_text):
+            return False
+        if self._ends_like_complete_paragraph(current_text):
+            return False
+        return True
+
+    def _join_text(self, current_text: str, next_text: str) -> str:
+        current = current_text.rstrip()
+        next_value = next_text.lstrip()
+        if not current:
+            return next_value
+        if not next_value:
+            return current
+        if current.endswith("-") and next_value[:1].isalnum():
+            return current[:-1] + next_value
+        if self._is_cjk(current[-1]) and self._is_cjk(next_value[0]):
+            return current + next_value
+        return f"{current} {next_value}"
 
     def _extract_image_regions(self, page, page_index: int, table_bboxes: list[object]) -> list[PdfImageRegion]:
         page_dict = page.get_text("dict")
@@ -270,12 +349,48 @@ class PdfParser(BaseParser):
         stripped = text.strip()
         if "|" in stripped and stripped.count("|") >= 2:
             return "table", 0
-        if re.match(r"^\s*(?:[-*+]|\d+[.)])\s+", stripped):
+        if self.list_re.match(stripped):
             return "list", 0
-        first_line = stripped.splitlines()[0].strip()
-        if len(stripped.splitlines()) == 1 and len(first_line) <= 60 and not re.search(r"[。?!;:：；]", first_line):
+        if self._looks_like_heading(stripped):
             return "title", 1
         return "paragraph", 0
+
+    def _looks_like_heading(self, text: str) -> bool:
+        first_line = text.splitlines()[0].strip()
+        if not first_line or len(text.splitlines()) != 1:
+            return False
+        if self.list_re.match(first_line):
+            return False
+        if len(first_line) > 28:
+            return False
+        if re.search(r"[@|]|\d{4}\.\d{2}|\d{11}", first_line):
+            return False
+        if re.search(r"[。！？!?；;，,]", first_line):
+            return False
+        if first_line.count(" ") > 3:
+            return False
+        if self.numbered_heading_re.match(first_line):
+            return True
+        return len(first_line) <= 12
+
+    def _ends_like_complete_paragraph(self, text: str) -> bool:
+        stripped = text.rstrip()
+        if not stripped:
+            return False
+        return bool(re.search(r"[。！？!?；;：:]$", stripped))
+
+    def _is_cjk(self, char: str) -> bool:
+        return "\u4e00" <= char <= "\u9fff"
+
+    def _union_bbox(self, left: object, right: object) -> list[float] | None:
+        if not (isinstance(left, list) and isinstance(right, list) and len(left) == 4 and len(right) == 4):
+            return left if isinstance(left, list) else right if isinstance(right, list) else None
+        return [
+            min(float(left[0]), float(right[0])),
+            min(float(left[1]), float(right[1])),
+            max(float(left[2]), float(right[2])),
+            max(float(left[3]), float(right[3])),
+        ]
 
     def _layout_role(self, y0: float, y1: float, page_height: float) -> str:
         if y1 <= page_height * 0.12:

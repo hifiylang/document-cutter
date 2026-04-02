@@ -1,6 +1,6 @@
 ﻿from __future__ import annotations
 
-"""API 集成测试，覆盖上传、URL、限流、超时和返回结构。"""
+"""API 集成测试，覆盖上传、URL、分页查询和详情查询。"""
 
 import time
 from io import BytesIO
@@ -12,7 +12,7 @@ from app.core.config import settings
 from app.core.errors import OcrRequiredError
 from app.main import app, rate_limiter
 from app.models.schemas import DocumentNode
-from app.services.boundary import BoundaryDecisionEngine
+from app.services.document_store import store
 from app.services.pipeline import DocumentChunkPipeline
 
 
@@ -30,6 +30,11 @@ def build_xlsx_bytes() -> bytes:
     return stream.getvalue()
 
 
+def reset_store() -> None:
+    store.clear_all()
+    rate_limiter.reset()
+
+
 def test_health_returns_ok() -> None:
     response = client.get("/health")
 
@@ -38,7 +43,8 @@ def test_health_returns_ok() -> None:
     assert response.headers["x-request-id"]
 
 
-def test_chunk_by_upload_returns_structured_chunks() -> None:
+def test_chunk_by_upload_persists_and_returns_summary() -> None:
+    reset_store()
     payload = (
         "# Product Guide\n\n"
         "First paragraph introduces the product.\n"
@@ -56,24 +62,47 @@ def test_chunk_by_upload_returns_structured_chunks() -> None:
 
     assert response.status_code == 200
     body = response.json()
+    assert set(body.keys()) == {"document_id", "filename", "status", "total_chunks"}
     assert body["filename"] == "sample.md"
-    assert body["total_nodes"] >= 3
+    assert body["status"] == "completed"
     assert body["total_chunks"] >= 2
-    assert body["chunks"]
-    assert all(chunk["chunk_id"] for chunk in body["chunks"])
-    assert all("section_path" in chunk for chunk in body["chunks"])
-    assert all("metadata" in chunk for chunk in body["chunks"])
-    assert any(chunk["metadata"]["chunk_type"] == "table" for chunk in body["chunks"])
+
+    list_response = client.get(f"/v1/documents/{body['document_id']}/chunks")
+    assert list_response.status_code == 200
+    list_body = list_response.json()
+    assert list_body["document_id"] == body["document_id"]
+    assert list_body["items"]
+    assert set(list_body["items"][0].keys()) == {"chunk_id", "preview_text", "section_path", "metadata"}
+
+
+def test_chunk_detail_returns_full_text() -> None:
+    reset_store()
+    response = client.post(
+        "/v1/chunk/by-upload",
+        files={"file": ("sample.md", b"# Title\n\nBody content here.", "text/markdown")},
+    )
+    document_id = response.json()["document_id"]
+    list_response = client.get(f"/v1/documents/{document_id}/chunks")
+    items = list_response.json()["items"]
+    chunk_id = next(item["chunk_id"] for item in items if "Body content here" in item["preview_text"])
+
+    detail_response = client.get(f"/v1/chunks/{chunk_id}")
+
+    assert detail_response.status_code == 200
+    detail = detail_response.json()
+    assert detail["chunk_id"] == chunk_id
+    assert detail["document_id"] == document_id
+    assert "Body content here" in detail["text"]
 
 
 def test_chunk_by_upload_supports_image_understanding() -> None:
+    reset_store()
     original = DocumentChunkPipeline.chunk_bytes
 
     def fake_chunk(self: DocumentChunkPipeline, file_bytes: bytes, filename: str, options=None):
         assert filename == "sample.png"
         return original(self, b"# Image Result\n\nDetected visual text.", "sample.md", options)
 
-    rate_limiter.reset()
     DocumentChunkPipeline.chunk_bytes = fake_chunk
     response = client.post(
         "/v1/chunk/by-upload",
@@ -88,6 +117,7 @@ def test_chunk_by_upload_supports_image_understanding() -> None:
 
 
 def test_chunk_by_url_downloads_and_processes_document() -> None:
+    reset_store()
     original = DocumentChunkPipeline._download_url
 
     def fake_download(self: DocumentChunkPipeline, document_url: str, filename: str) -> bytes:
@@ -112,6 +142,7 @@ def test_chunk_by_url_downloads_and_processes_document() -> None:
 
 
 def test_chunk_by_url_rejects_non_http_scheme() -> None:
+    reset_store()
     response = client.post(
         "/v1/chunk/by-url",
         json={
@@ -125,6 +156,7 @@ def test_chunk_by_url_rejects_non_http_scheme() -> None:
 
 
 def test_chunk_by_upload_rejects_unsupported_type() -> None:
+    reset_store()
     response = client.post(
         "/v1/chunk/by-upload",
         files={"file": ("sample.csv", b"a,b,c", "text/csv")},
@@ -135,6 +167,7 @@ def test_chunk_by_upload_rejects_unsupported_type() -> None:
 
 
 def test_chunk_by_url_returns_bad_gateway_when_download_fails() -> None:
+    reset_store()
     original = DocumentChunkPipeline._download_url
 
     def fake_download(self: DocumentChunkPipeline, document_url: str, filename: str) -> bytes:
@@ -153,6 +186,12 @@ def test_chunk_by_url_returns_bad_gateway_when_download_fails() -> None:
     assert response.status_code == 502
 
 
+def test_get_document_returns_404_for_missing_document() -> None:
+    reset_store()
+    response = client.get("/v1/documents/not-exists")
+    assert response.status_code == 404
+
+
 def test_metrics_exposes_http_counters() -> None:
     client.get("/health")
     response = client.get("/metrics")
@@ -162,6 +201,7 @@ def test_metrics_exposes_http_counters() -> None:
 
 
 def test_rate_limit_returns_429_when_exceeded() -> None:
+    reset_store()
     original = DocumentChunkPipeline._download_url
 
     def fake_download(self: DocumentChunkPipeline, document_url: str, filename: str) -> bytes:
@@ -182,6 +222,7 @@ def test_rate_limit_returns_429_when_exceeded() -> None:
 
 
 def test_chunk_by_upload_returns_504_when_processing_times_out() -> None:
+    reset_store()
     original = DocumentChunkPipeline.chunk_bytes
     original_timeout = settings.request_timeout_seconds
 
@@ -190,7 +231,6 @@ def test_chunk_by_upload_returns_504_when_processing_times_out() -> None:
         return original(self, file_bytes, filename, options)
 
     settings.request_timeout_seconds = 0.1
-    rate_limiter.reset()
     DocumentChunkPipeline.chunk_bytes = slow_chunk
     response = client.post(
         "/v1/chunk/by-upload",
@@ -203,12 +243,12 @@ def test_chunk_by_upload_returns_504_when_processing_times_out() -> None:
 
 
 def test_chunk_by_upload_returns_422_when_ocr_is_required() -> None:
+    reset_store()
     original = DocumentChunkPipeline.chunk_bytes
 
     def no_text(self: DocumentChunkPipeline, file_bytes: bytes, filename: str, options=None):
         raise OcrRequiredError("ocr required for scanned or image-only document")
 
-    rate_limiter.reset()
     DocumentChunkPipeline.chunk_bytes = no_text
     response = client.post(
         "/v1/chunk/by-upload",
@@ -220,7 +260,7 @@ def test_chunk_by_upload_returns_422_when_ocr_is_required() -> None:
 
 
 def test_chunk_by_upload_supports_xlsx_table_extraction() -> None:
-    rate_limiter.reset()
+    reset_store()
     response = client.post(
         "/v1/chunk/by-upload",
         files={
@@ -233,50 +273,22 @@ def test_chunk_by_upload_supports_xlsx_table_extraction() -> None:
     )
 
     assert response.status_code == 200
-    body = response.json()
-    assert body["filename"] == "sample.xlsx"
-    assert body["total_nodes"] >= 1
-    assert any(chunk["metadata"]["chunk_type"] == "table" for chunk in body["chunks"])
-    assert any("Field | Value" in chunk["text"] for chunk in body["chunks"])
+    document_id = response.json()["document_id"]
+    list_body = client.get(f"/v1/documents/{document_id}/chunks").json()
+    assert any(item["metadata"]["chunk_type"] == "table" for item in list_body["items"])
 
 
-def test_chunk_by_upload_exposes_similarity_metadata_when_boundary_engine_runs() -> None:
-    original = BoundaryDecisionEngine.should_merge
-
-    def fake_should_merge(self: BoundaryDecisionEngine, left_block, right_block, options):
-        return {"merge": True, "strategy": "similarity_high", "similarity_score": 0.93}
-
-    BoundaryDecisionEngine.should_merge = fake_should_merge
-    rate_limiter.reset()
-    payload = (
-        "# Product Guide\n\n"
-        "Short instruction.\n"
-        "Follow-up explanation in the same section.\n"
-    )
+def test_list_chunks_returns_preview_text_only() -> None:
+    reset_store()
     response = client.post(
         "/v1/chunk/by-upload",
-        files={"file": ("sample.md", payload.encode("utf-8"), "text/markdown")},
+        files={"file": ("sample.md", b"# Title\n\nA" * 100, "text/markdown")},
     )
-    BoundaryDecisionEngine.should_merge = original
+    document_id = response.json()["document_id"]
 
-    assert response.status_code == 200
-    body = response.json()
-    merged_chunk = next(chunk for chunk in body["chunks"] if "Short instruction." in chunk["text"])
-    assert merged_chunk["metadata"]["merge_strategy"] == "similarity_high"
-    assert merged_chunk["metadata"]["similarity_score"] == 0.93
+    list_response = client.get(f"/v1/documents/{document_id}/chunks?page=1&page_size=5")
+    body = list_response.json()
 
-
-def test_chunk_by_upload_exposes_service_side_selected_options() -> None:
-    payload = "# Guide\n\nSimple content."
-    response = client.post(
-        "/v1/chunk/by-upload",
-        files={"file": ("sample.md", payload.encode("utf-8"), "text/markdown")},
-    )
-
-    assert response.status_code == 200
-    selected = response.json()["metadata"]["selected_options"]
-    assert "text_model" in selected
-    assert "flash_model" in selected
-    assert "vision_model" in selected
-    assert "embedding_base_url" in selected
-    assert "embedding_model" in selected
+    assert list_response.status_code == 200
+    assert set(body.keys()) == {"document_id", "filename", "total_chunks", "page", "page_size", "items"}
+    assert set(body["items"][0].keys()) == {"chunk_id", "preview_text", "section_path", "metadata"}

@@ -1,4 +1,4 @@
-from pydantic import ConfigDict, Field
+﻿from pydantic import ConfigDict, Field
 from pydantic_settings import BaseSettings
 
 
@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     # OCR / PDF 配置
     vision_pdf_max_pages: int = Field(default=10, ge=1)
     pdf_ocr_fallback_min_chars: int = Field(default=40, ge=0)
+
+    # MySQL 配置
+    mysql_host: str = "localhost"
+    mysql_port: int = Field(default=3306, ge=1)
+    mysql_user: str = "root"
+    mysql_password: str = "123456"
+    mysql_database: str = "document_cutter"
 
 
 settings = Settings()

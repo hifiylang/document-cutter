@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 """服务入口，负责组装路由、中间件和指标端点。"""
 
@@ -14,6 +14,7 @@ from app.core.config import settings
 from app.core.logging import configure_logging, request_id_var
 from app.core.metrics import REQUEST_COUNTER, REQUEST_DURATION, metrics_payload
 from app.core.rate_limit import InMemoryRateLimiter
+from app.storage import database
 
 
 configure_logging()
@@ -27,9 +28,15 @@ rate_limiter = InMemoryRateLimiter(
 app = FastAPI(title=settings.app_name, debug=settings.debug)
 
 
+@app.on_event("startup")
+def startup() -> None:
+    """应用启动时确保数据库与表结构可用。"""
+
+    database.initialize()
+
+
 @app.middleware("http")
 async def request_context_middleware(request, call_next):
-    # 为每个请求注入 request_id，并在统一出口记录耗时和指标。
     request_id = request.headers.get("x-request-id", str(uuid.uuid4()))
     token = request_id_var.set(request_id)
     start = time.perf_counter()
@@ -53,7 +60,6 @@ async def request_context_middleware(request, call_next):
 
 @app.get("/metrics", include_in_schema=False)
 def metrics() -> Response:
-    # 监控系统直接抓取这里暴露的原始指标文本。
     payload, content_type = metrics_payload()
     return Response(content=payload, media_type=content_type)
 

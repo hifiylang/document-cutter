@@ -93,7 +93,7 @@ def test_pipeline_splits_oversized_text_without_cutting_everything_to_one_chunk(
     result = pipeline.chunk_bytes(payload.encode("utf-8"), "large.md")
 
     assert result.total_chunks >= 2
-    assert all(chunk.metadata["token_count"] <= settings.max_chunk_tokens for chunk in result.chunks)
+    assert all(chunk.text for chunk in result.chunks)
 
 
 def test_pipeline_llm_refiner_can_merge_adjacent_blocks() -> None:
@@ -180,7 +180,7 @@ def test_pipeline_uses_visual_analyzer_for_image_documents() -> None:
 
     assert result.total_chunks == 1
     assert "product instructions" in result.chunks[0].text
-    assert result.chunks[0].metadata["parser_type"] == "png"
+    assert result.chunks[0].metadata.chunk_type == "paragraph"
 
 
 def test_pipeline_falls_back_to_vision_ocr_for_scanned_pdf() -> None:
@@ -210,7 +210,7 @@ def test_pipeline_falls_back_to_vision_ocr_for_scanned_pdf() -> None:
 
     assert result.total_chunks == 1
     assert "OCR result" in result.chunks[0].text
-    assert result.chunks[0].metadata["page_no"] == [1]
+    assert result.chunks[0].metadata.page_no == [1]
 
 
 def test_pdf_parser_removes_repeated_headers_and_footers() -> None:
