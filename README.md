@@ -4,7 +4,7 @@
 
 ## 核心能力
 
-- 支持 `DOCX / PDF / TXT / MD / XLS / XLSX / PNG / JPG / JPEG / WEBP / BMP / TIF / TIFF`
+- 支持 `DOC / DOCX / PDF / TXT / MD / XLS / XLSX / PNG / JPG / JPEG / WEBP / BMP / TIF / TIFF`
 - 支持 Word、Markdown、Excel、PDF 的结构化解析
 - 支持扫描 PDF 和图片文档的视觉 OCR 回退
 - 支持 PDF 页面内图片区域裁剪、视觉解析和按页内位置回挂

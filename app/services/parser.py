@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from app.services.parsers import (
     BaseParser,
+    DocParser,
     DocxParser,
     PdfImageRegion,
     PdfParser,
@@ -22,6 +23,7 @@ __all__ = [
     "BaseParser",
     "PdfImageRegion",
     "TxtMarkdownParser",
+    "DocParser",
     "DocxParser",
     "PdfParser",
     "XlsxParser",

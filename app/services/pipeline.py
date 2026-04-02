@@ -23,6 +23,7 @@ from app.services.vision import VisualDocumentAnalyzer
 
 SUPPORTED_SUFFIXES = {
     ".pdf",
+    ".doc",
     ".docx",
     ".txt",
     ".md",
@@ -39,6 +40,7 @@ SUPPORTED_SUFFIXES = {
 
 ALLOWED_CONTENT_TYPES = {
     ".pdf": {"application/pdf", "application/octet-stream"},
+    ".doc": {"application/msword", "application/octet-stream"},
     ".docx": {
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "application/octet-stream",

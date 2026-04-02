@@ -278,6 +278,34 @@ def test_chunk_by_upload_supports_xlsx_table_extraction() -> None:
     assert any(item["metadata"]["chunk_type"] == "table" for item in list_body["items"])
 
 
+def test_chunk_by_upload_supports_doc_file() -> None:
+    reset_store()
+    original_parse = DocumentChunkPipeline._parse_document
+
+    def fake_parse(self: DocumentChunkPipeline, file_bytes: bytes, filename: str):
+        assert filename == "sample.doc"
+        return [
+            DocumentNode(
+                node_id="doc-node",
+                node_type="paragraph",
+                text="Legacy doc content extracted.",
+                source_meta={"parser_strategy": "doc_antiword"},
+            )
+        ]
+
+    DocumentChunkPipeline._parse_document = fake_parse
+    response = client.post(
+        "/v1/chunk/by-upload",
+        files={"file": ("sample.doc", b"fake-doc", "application/msword")},
+    )
+    DocumentChunkPipeline._parse_document = original_parse
+
+    assert response.status_code == 200
+    document_id = response.json()["document_id"]
+    detail_list = client.get(f"/v1/documents/{document_id}/chunks").json()
+    assert any("Legacy doc content extracted." in item["preview_text"] for item in detail_list["items"])
+
+
 def test_list_chunks_returns_preview_text_only() -> None:
     reset_store()
     response = client.post(

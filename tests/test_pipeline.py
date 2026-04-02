@@ -11,7 +11,7 @@ from app.core.config import settings
 from app.models.schemas import ChunkOptions, DocumentNode
 from app.services.boundary import BoundaryDecisionEngine
 from app.services.llm import LlmBoundaryRefiner
-from app.services.parser import PdfParser, get_parser
+from app.services.parser import DocParser, PdfParser, get_parser
 from app.services.pipeline import DocumentChunkPipeline
 from app.services.selection import RuntimeSelector
 from app.services.token_counter import TokenCounter
@@ -61,6 +61,12 @@ def test_xls_parser_extracts_sheet_as_table_node() -> None:
     assert nodes[0].text == "Sheet1"
     assert nodes[1].source_meta["sheet_name"] == "Sheet1"
     assert "Field | Value" in nodes[1].text
+
+
+def test_get_parser_supports_legacy_doc() -> None:
+    parser = get_parser("legacy.doc")
+
+    assert isinstance(parser, DocParser)
 
 
 def test_pipeline_keeps_content_in_the_same_section() -> None:
