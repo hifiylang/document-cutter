@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """LLM 只负责灰区边界裁决，不参与全文重切。"""
 
 import json
@@ -7,41 +8,38 @@ import time
 from app.core.config import settings
 from app.core.metrics import EXTERNAL_CALL_COUNTER, EXTERNAL_CALL_DURATION
 from app.models.schemas import DocumentNode
-
-try:
-    from openai import OpenAI
-except Exception:  # pragma: no cover
-    OpenAI = None  # type: ignore
+from app.services.model_client import ModelClient
+from app.services.prompt_store import get_prompt
 
 
 class LlmBoundaryRefiner:
+    """相邻块的 LLM 边界裁决器。"""
+
     def __init__(self) -> None:
-        self.enabled = bool(settings.llm_enabled and settings.openai_api_key and OpenAI)
-        base_url = settings.openai_base_url or None
-        self.client = OpenAI(api_key=settings.openai_api_key, base_url=base_url) if self.enabled else None
+        self.enabled = bool(settings.llm_enabled and settings.openai_api_key)
+        self.client = ModelClient() if self.enabled else None
+        # 简单文本任务优先走 flash 小模型；如果没单独配置，再回退到文本模型。
+        self.text_model = settings.text_model
+        self.flash_model = settings.flash_model or settings.text_model
 
     def decide_merge(self, left_text: str, right_text: str) -> bool:
-        if not self.enabled:
+        """判断两个相邻文本块是否应该合并。"""
+        if not self.enabled or not self.client or not self.flash_model:
             return False
 
-        # 这里的提示词只要求模型做“合并/保留”二选一，避免回答发散。
-        prompt = (
-            "You are a document chunk boundary assistant. Decide whether two adjacent chunks should be merged. "
-            'Return JSON only: {"decision":"merge"} or {"decision":"keep"}. '
-            "Merge only when they clearly belong to the same semantic unit."
-        )
+        prompt = get_prompt("llm", "boundary_merge_system")
         payload = {"left": left_text[:1200], "right": right_text[:1200]}
         start = time.perf_counter()
         try:
-            response = self.client.responses.create(
-                model=settings.llm_model,
-                input=[
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-                ],
+            raw = self.client.create_text_json(
+                model=self.flash_model,
+                system_prompt=prompt,
+                user_payload=payload,
                 temperature=0.1,
+                # flash 小模型默认不开启 thinking/reasoning。
+                enable_thinking=False,
             )
-            result = json.loads(response.output_text.strip())
+            result = json.loads(raw)
             EXTERNAL_CALL_COUNTER.labels("llm", "success").inc()
             return result.get("decision") == "merge"
         except Exception:
@@ -51,6 +49,7 @@ class LlmBoundaryRefiner:
             EXTERNAL_CALL_DURATION.labels("llm").observe(time.perf_counter() - start)
 
     def refine_blocks(self, blocks: list[list[DocumentNode]]) -> list[list[DocumentNode]]:
+        """对相邻块做灰区裁决；LLM 失败时直接回退原结果。"""
         if not blocks:
             return []
         try:
@@ -71,6 +70,7 @@ class LlmBoundaryRefiner:
             return blocks
 
     def _can_consider_merge(self, left_block: list[DocumentNode], right_block: list[DocumentNode]) -> bool:
+        """只允许同章节、非标题、非表格的相邻块进入 LLM 裁决。"""
         if not left_block or not right_block:
             return False
         left_types = {node.node_type for node in left_block}
@@ -82,6 +82,7 @@ class LlmBoundaryRefiner:
         return self._section_path(left_block) == self._section_path(right_block)
 
     def _section_path(self, block: list[DocumentNode]) -> list[str]:
+        """取块里最近的章节路径，用于判断是否属于同一语义范围。"""
         for node in reversed(block):
             section_path = node.source_meta.get("section_path")
             if section_path:
