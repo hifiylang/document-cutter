@@ -3,8 +3,10 @@
 """文档切分服务的对外 HTTP 路由。"""
 
 import asyncio
+import json
 
 from fastapi import APIRouter, File, Form, Query, UploadFile
+from fastapi.responses import StreamingResponse
 
 from app.core.config import settings
 from app.core.errors import NotFoundError, ProcessingTimeoutError, to_http_error
@@ -13,6 +15,7 @@ from app.models.schemas import (
     ChunkDetailResponse,
     ChunkListResponse,
     ChunkOptions,
+    ChunkStreamEvent,
     HealthResponse,
     StoredDocumentResponse,
 )
@@ -22,6 +25,11 @@ from app.services.pipeline import DocumentChunkPipeline
 
 router = APIRouter()
 pipeline = DocumentChunkPipeline()
+
+
+def _sse_payload(event: ChunkStreamEvent) -> str:
+    data = event.model_dump(mode="json", exclude_none=True)
+    return f"event: {event.event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 async def _run_with_timeout(func, *args):
@@ -86,6 +94,76 @@ async def chunk_by_url(request: ChunkByUrlRequest) -> StoredDocumentResponse:
             request.options,
         )
         return StoredDocumentResponse.model_validate(store.save(result))
+    except Exception as exc:
+        raise to_http_error(exc) from exc
+
+
+@router.post("/v1/chunk/by-upload/stream")
+async def stream_chunk_by_upload(
+    file: UploadFile = File(...),
+    target_chunk_tokens: int | None = Form(default=None),
+    min_chunk_tokens: int | None = Form(default=None),
+    max_chunk_tokens: int | None = Form(default=None),
+    overlap_ratio: float | None = Form(default=None),
+    overlap_tokens: int | None = Form(default=None),
+) -> StreamingResponse:
+    """上传文件并通过 SSE 按 chunk 实时返回处理结果。"""
+
+    try:
+        payload = await file.read()
+        options = ChunkOptions(
+            target_chunk_tokens=settings.target_chunk_tokens if target_chunk_tokens is None else target_chunk_tokens,
+            min_chunk_tokens=settings.min_chunk_tokens if min_chunk_tokens is None else min_chunk_tokens,
+            max_chunk_tokens=settings.max_chunk_tokens if max_chunk_tokens is None else max_chunk_tokens,
+            overlap_ratio=settings.overlap_ratio if overlap_ratio is None else overlap_ratio,
+            overlap_tokens=settings.overlap_tokens if overlap_tokens is None else overlap_tokens,
+        )
+
+        def event_stream():
+            document_started = False
+            for event in pipeline.stream_chunks_bytes(payload, file.filename or "uploaded.txt", options):
+                if event.event == "document_started" and not document_started:
+                    store.begin_document(event.document_id, event.filename, status="processing")
+                    document_started = True
+                elif event.event == "chunk_generated" and event.chunk is not None:
+                    store.append_chunk(event.document_id, event.chunk)
+                elif event.event == "document_completed":
+                    store.complete_document(event.document_id, event.total_chunks or 0)
+                elif event.event == "document_failed":
+                    if document_started:
+                        store.fail_document(event.document_id, event.total_chunks or 0)
+                    else:
+                        store.begin_document(event.document_id, event.filename, status="failed")
+                yield _sse_payload(event)
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
+    except Exception as exc:
+        raise to_http_error(exc) from exc
+
+
+@router.post("/v1/chunk/by-url/stream")
+async def stream_chunk_by_url(request: ChunkByUrlRequest) -> StreamingResponse:
+    """按 URL 拉取文档并通过 SSE 按 chunk 实时返回处理结果。"""
+
+    try:
+        def event_stream():
+            document_started = False
+            for event in pipeline.stream_chunks_url(request.document_url, request.filename, request.options):
+                if event.event == "document_started" and not document_started:
+                    store.begin_document(event.document_id, event.filename, status="processing")
+                    document_started = True
+                elif event.event == "chunk_generated" and event.chunk is not None:
+                    store.append_chunk(event.document_id, event.chunk)
+                elif event.event == "document_completed":
+                    store.complete_document(event.document_id, event.total_chunks or 0)
+                elif event.event == "document_failed":
+                    if document_started:
+                        store.fail_document(event.document_id, event.total_chunks or 0)
+                    else:
+                        store.begin_document(event.document_id, event.filename, status="failed")
+                yield _sse_payload(event)
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
     except Exception as exc:
         raise to_http_error(exc) from exc
 

@@ -4,17 +4,19 @@
 
 import ipaddress
 import socket
+import uuid
 from pathlib import Path
+from typing import Iterator
 from urllib.parse import urlsplit
 
 import httpx
 
 from app.core.config import settings
 from app.core.errors import DownloadError, FileTooLargeError, OcrRequiredError, UnsupportedFileTypeError
-from app.models.schemas import ChunkOptions, ChunkResponse, DocumentNode
+from app.models.schemas import Chunk, ChunkOptions, ChunkResponse, ChunkStreamEvent, DocumentNode, SectionBatch
 from app.services.normalizer import DocumentNormalizer
 from app.services.parser import get_parser, is_image_filename
-from app.services.selection import RuntimeSelector
+from app.services.sectioner import SectionBatcher
 from app.services.serializer import ChunkSerializer
 from app.services.text_chunker import TextChunker
 from app.services.token_counter import TokenCounter
@@ -66,7 +68,7 @@ class DocumentChunkPipeline:
         self.chunker = TextChunker(self.token_counter)
         self.serializer = ChunkSerializer(self.token_counter)
         self.visual_analyzer = VisualDocumentAnalyzer()
-        self.selector = RuntimeSelector()
+        self.section_batcher = SectionBatcher()
 
     def chunk_bytes(
         self,
@@ -76,6 +78,7 @@ class DocumentChunkPipeline:
     ) -> ChunkResponse:
         """从原始文件字节流直接完成解析、切分和序列化。"""
 
+        document_id = str(uuid.uuid4())
         options = options or ChunkOptions(
             target_chunk_tokens=settings.target_chunk_tokens,
             min_chunk_tokens=settings.min_chunk_tokens,
@@ -83,20 +86,14 @@ class DocumentChunkPipeline:
             overlap_ratio=settings.overlap_ratio,
             overlap_tokens=settings.overlap_tokens,
         )
-        self._validate_file(filename, file_bytes)
-        nodes = self._extract_nodes(file_bytes, filename, options)
-        nodes = self.normalizer.normalize(nodes)
-        if not nodes:
-            suffix = Path(filename).suffix.lower()
-            if suffix == ".pdf" or is_image_filename(filename):
-                raise OcrRequiredError("ocr required for scanned or image-only document")
-            raise ValueError("document contains no extractable text")
-
-        blocks = self.chunker.chunk(nodes, options)
-        return self.serializer.serialize(
-            filename,
-            blocks,
-            response_metadata=self.selector.to_response_metadata(options),
+        chunks: list[Chunk] = []
+        for _section, section_chunks in self._iter_section_chunks(file_bytes, filename, options):
+            chunks.extend(section_chunks)
+        return ChunkResponse(
+            document_id=document_id,
+            filename=filename,
+            total_chunks=len(chunks),
+            chunks=chunks,
         )
 
     def chunk_url(self, document_url: str, filename: str, options: ChunkOptions | None = None) -> ChunkResponse:
@@ -110,6 +107,93 @@ class DocumentChunkPipeline:
             raise DownloadError(f"failed to download document from {document_url}") from exc
         return self.chunk_bytes(content, filename, options)
 
+    def stream_chunks_bytes(
+        self,
+        file_bytes: bytes,
+        filename: str,
+        options: ChunkOptions | None = None,
+        document_id: str | None = None,
+    ) -> Iterator[ChunkStreamEvent]:
+        """按章节切分，并按 chunk 逐条产出事件。"""
+
+        document_id = document_id or str(uuid.uuid4())
+        options = options or ChunkOptions(
+            target_chunk_tokens=settings.target_chunk_tokens,
+            min_chunk_tokens=settings.min_chunk_tokens,
+            max_chunk_tokens=settings.max_chunk_tokens,
+            overlap_ratio=settings.overlap_ratio,
+            overlap_tokens=settings.overlap_tokens,
+        )
+
+        yield ChunkStreamEvent(
+            event="document_started",
+            document_id=document_id,
+            filename=filename,
+            total_chunks=0,
+        )
+
+        chunk_index = 0
+        try:
+            for section, section_chunks in self._iter_section_chunks(file_bytes, filename, options):
+                for index, chunk in enumerate(section_chunks, start=1):
+                    chunk_index += 1
+                    chunk.chunk_index = chunk_index
+                    yield ChunkStreamEvent(
+                        event="chunk_generated",
+                        document_id=document_id,
+                        filename=filename,
+                        chunk=chunk,
+                        chunk_index=chunk_index,
+                        section_index=section.section_index,
+                        section_path=chunk.section_path,
+                        is_last_chunk_in_section=index == len(section_chunks),
+                    )
+                yield ChunkStreamEvent(
+                    event="section_completed",
+                    document_id=document_id,
+                    filename=filename,
+                    section_index=section.section_index,
+                    section_path=section.section_path,
+                    total_chunks=chunk_index,
+                )
+
+            yield ChunkStreamEvent(
+                event="document_completed",
+                document_id=document_id,
+                filename=filename,
+                total_chunks=chunk_index,
+            )
+        except Exception as exc:
+            yield ChunkStreamEvent(
+                event="document_failed",
+                document_id=document_id,
+                filename=filename,
+                total_chunks=chunk_index,
+                message=str(exc),
+            )
+
+    def stream_chunks_url(
+        self,
+        document_url: str,
+        filename: str,
+        options: ChunkOptions | None = None,
+        document_id: str | None = None,
+    ) -> Iterator[ChunkStreamEvent]:
+        """先下载远程文档，再按章节逐条返回 chunk。"""
+
+        try:
+            content = self._download_url(document_url, filename)
+        except Exception as exc:
+            yield ChunkStreamEvent(
+                event="document_failed",
+                document_id=document_id or str(uuid.uuid4()),
+                filename=filename,
+                message=str(exc),
+            )
+            return
+
+        yield from self.stream_chunks_bytes(content, filename, options, document_id=document_id)
+
     def _extract_nodes(self, file_bytes: bytes, filename: str, options: ChunkOptions) -> list[DocumentNode]:
         """按文件类型选择最合适的解析方式。"""
 
@@ -122,6 +206,36 @@ class DocumentChunkPipeline:
             if vision_nodes:
                 return vision_nodes
         return nodes
+
+    def _build_sections(self, nodes: list[DocumentNode]) -> list[SectionBatch]:
+        return self.section_batcher.batch(nodes)
+
+    def _iter_section_chunks(
+        self,
+        file_bytes: bytes,
+        filename: str,
+        options: ChunkOptions,
+    ) -> Iterator[tuple[SectionBatch, list[Chunk]]]:
+        self._validate_file(filename, file_bytes)
+        nodes = self._extract_nodes(file_bytes, filename, options)
+        nodes = self.normalizer.normalize(nodes)
+        if not nodes:
+            suffix = Path(filename).suffix.lower()
+            if suffix == ".pdf" or is_image_filename(filename):
+                raise OcrRequiredError("ocr required for scanned or image-only document")
+            raise ValueError("document contains no extractable text")
+
+        chunk_index = 0
+        for section in self._build_sections(nodes):
+            blocks = self.chunker.chunk(section.nodes, options)
+            section_chunks: list[Chunk] = []
+            for block in blocks:
+                chunk_index += 1
+                chunk = self.serializer.serialize_chunk(block, chunk_index)
+                if chunk is not None:
+                    section_chunks.append(chunk)
+            if section_chunks:
+                yield section, section_chunks
 
     def _parse_document(self, file_bytes: bytes, filename: str) -> list[DocumentNode]:
         parser = get_parser(filename)

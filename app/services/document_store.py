@@ -12,31 +12,57 @@ from app.storage import database
 class DocumentStore:
     """负责保存文档、chunk，以及分页和详情查询。"""
 
-    def save(self, response: ChunkResponse) -> dict[str, Any]:
+    def begin_document(self, document_id: str, filename: str, status: str = "processing") -> None:
         with database.connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
                     "INSERT INTO documents (id, filename, status, total_chunks) VALUES (%s, %s, %s, %s)",
-                    (response.document_id, response.filename, "completed", response.total_chunks),
+                    (document_id, filename, status, 0),
                 )
-                for index, chunk in enumerate(response.chunks, start=1):
-                    cursor.execute(
-                        """
-                        INSERT INTO document_chunks (
-                            id, document_id, chunk_index, chunk_type, section_path, page_no, preview_text, full_text
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                        """,
-                        (
-                            chunk.chunk_id,
-                            response.document_id,
-                            index,
-                            chunk.metadata.chunk_type,
-                            json.dumps(chunk.section_path, ensure_ascii=False),
-                            json.dumps(chunk.metadata.page_no, ensure_ascii=False),
-                            self._preview_text(chunk.text),
-                            chunk.text,
-                        ),
-                    )
+
+    def append_chunk(self, document_id: str, chunk: Chunk) -> None:
+        with database.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT COUNT(*) AS chunk_count FROM document_chunks WHERE document_id = %s",
+                    (document_id,),
+                )
+                row = cursor.fetchone()
+                chunk_index = int(row["chunk_count"]) + 1
+                cursor.execute(
+                    """
+                    INSERT INTO document_chunks (
+                        id, document_id, chunk_index, chunk_type, section_path, page_no, preview_text, full_text
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        chunk.chunk_id,
+                        document_id,
+                        chunk.chunk_index or chunk_index,
+                        chunk.metadata.chunk_type,
+                        json.dumps(chunk.section_path, ensure_ascii=False),
+                        json.dumps(chunk.metadata.page_no, ensure_ascii=False),
+                        self._preview_text(chunk.text),
+                        chunk.text,
+                    ),
+                )
+                cursor.execute(
+                    "UPDATE documents SET total_chunks = %s WHERE id = %s",
+                    (chunk.chunk_index or chunk_index, document_id),
+                )
+
+    def complete_document(self, document_id: str, total_chunks: int) -> None:
+        self._update_document_status(document_id, "completed", total_chunks)
+
+    def fail_document(self, document_id: str, total_chunks: int) -> None:
+        self._update_document_status(document_id, "failed", total_chunks)
+
+    def save(self, response: ChunkResponse) -> dict[str, Any]:
+        self.begin_document(response.document_id, response.filename, status="processing")
+        for index, chunk in enumerate(response.chunks, start=1):
+            chunk.chunk_index = index
+            self.append_chunk(response.document_id, chunk)
+        self.complete_document(response.document_id, response.total_chunks)
         return {
             "document_id": response.document_id,
             "filename": response.filename,
@@ -125,6 +151,14 @@ class DocumentStore:
             with connection.cursor() as cursor:
                 cursor.execute("DELETE FROM document_chunks")
                 cursor.execute("DELETE FROM documents")
+
+    def _update_document_status(self, document_id: str, status: str, total_chunks: int) -> None:
+        with database.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE documents SET status = %s, total_chunks = %s WHERE id = %s",
+                    (status, total_chunks, document_id),
+                )
 
     def _preview_text(self, text: str, limit: int = 200) -> str:
         normalized = text.replace("\n", " ").strip()

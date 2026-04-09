@@ -17,6 +17,7 @@ class ChunkSerializer:
 
     def serialize(
         self,
+        document_id: str,
         filename: str,
         blocks: list[list[DocumentNode]],
         response_metadata: dict[str, object] | None = None,
@@ -25,33 +26,37 @@ class ChunkSerializer:
 
         chunks: list[Chunk] = []
         _ = response_metadata
-        _parser_type = Path(filename).suffix.lower().lstrip(".") or "text"
-        for block in blocks:
-            if not block:
-                continue
-            text = "\n".join(node.text for node in block if node.text).strip()
-            if not text:
-                continue
-
-            section_path = self._section_path(block)
-            page_no = sorted({node.source_page for node in block if node.source_page is not None})
-            chunk_type = self._chunk_type(block)
-            chunks.append(
-                Chunk(
-                    chunk_id=str(uuid.uuid4()),
-                    text=text,
-                    section_path=section_path,
-                    metadata=ChunkMetadata(
-                        chunk_type=chunk_type,
-                        page_no=page_no,
-                    ),
-                )
-            )
+        _ = Path(filename).suffix.lower().lstrip(".") or "text"
+        for index, block in enumerate(blocks, start=1):
+            chunk = self.serialize_chunk(block, index)
+            if chunk is not None:
+                chunks.append(chunk)
         return ChunkResponse(
-            document_id=str(uuid.uuid4()),
+            document_id=document_id,
             filename=filename,
             total_chunks=len(chunks),
             chunks=chunks,
+        )
+
+    def serialize_chunk(self, block: list[DocumentNode], chunk_index: int) -> Chunk | None:
+        if not block:
+            return None
+        text = "\n".join(node.text for node in block if node.text).strip()
+        if not text:
+            return None
+
+        section_path = self._section_path(block)
+        page_no = sorted({node.source_page for node in block if node.source_page is not None})
+        chunk_type = self._chunk_type(block)
+        return Chunk(
+            chunk_id=str(uuid.uuid4()),
+            chunk_index=chunk_index,
+            text=text,
+            section_path=section_path,
+            metadata=ChunkMetadata(
+                chunk_type=chunk_type,
+                page_no=page_no,
+            ),
         )
 
     def _section_path(self, block: list[DocumentNode]) -> list[str]:

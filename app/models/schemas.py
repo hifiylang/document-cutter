@@ -21,6 +21,14 @@ class DocumentNode(BaseModel):
     source_meta: dict[str, Any] = Field(default_factory=dict)
 
 
+class SectionBatch(BaseModel):
+    """章节级处理中间结构。"""
+
+    section_index: int
+    section_path: list[str] = Field(default_factory=list)
+    nodes: list[DocumentNode] = Field(default_factory=list)
+
+
 class ChunkMetadata(BaseModel):
     """对外暴露的最小 chunk 元信息。"""
 
@@ -33,6 +41,7 @@ class Chunk(BaseModel):
 
     chunk_id: str
     text: str
+    chunk_index: int | None = None
     section_path: list[str] = Field(default_factory=list)
     metadata: ChunkMetadata
 
@@ -44,6 +53,30 @@ class ChunkResponse(BaseModel):
     filename: str
     total_chunks: int
     chunks: list[Chunk]
+
+
+StreamEventType = Literal[
+    "document_started",
+    "chunk_generated",
+    "section_completed",
+    "document_completed",
+    "document_failed",
+]
+
+
+class ChunkStreamEvent(BaseModel):
+    """SSE 返回的流式事件结构。"""
+
+    event: StreamEventType
+    document_id: str
+    filename: str
+    chunk: Chunk | None = None
+    chunk_index: int | None = None
+    section_index: int | None = None
+    section_path: list[str] = Field(default_factory=list)
+    total_chunks: int | None = None
+    is_last_chunk_in_section: bool | None = None
+    message: str | None = None
 
 
 class StoredDocumentResponse(BaseModel):
