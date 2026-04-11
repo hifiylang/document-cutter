@@ -46,7 +46,8 @@ class PdfParser(BaseParser):
             nodes = self._extract_with_pymupdf(file_bytes, filename)
         if not nodes:
             nodes = self._extract_with_pypdf(file_bytes)
-        return self._remove_repeated_page_noise(nodes)
+        nodes = self._remove_repeated_page_noise(nodes)
+        return self._merge_cross_page_nodes(nodes)
 
     def _extract_with_pymupdf(self, file_bytes: bytes, filename: str) -> list[DocumentNode]:
         document = fitz.open(stream=file_bytes, filetype="pdf")
@@ -377,7 +378,7 @@ class PdfParser(BaseParser):
         stripped = text.rstrip()
         if not stripped:
             return False
-        return bool(re.search(r"[。！？!?；;：:]$", stripped))
+        return bool(re.search(r"[。！？!?；;：:\.]$", stripped))
 
     def _is_cjk(self, char: str) -> bool:
         return "\u4e00" <= char <= "\u9fff"
@@ -443,3 +444,142 @@ class PdfParser(BaseParser):
                 continue
             cleaned.append(node)
         return cleaned
+
+    def _merge_cross_page_nodes(self, nodes: list[DocumentNode]) -> list[DocumentNode]:
+        if not nodes:
+            return []
+
+        merged: list[DocumentNode] = []
+        current = nodes[0].model_copy(deep=True)
+        for next_node in nodes[1:]:
+            next_copy = next_node.model_copy(deep=True)
+            if self._should_merge_cross_page_paragraph(current, next_copy):
+                current = self._merge_paragraph_nodes(current, next_copy)
+                continue
+            if self._should_merge_cross_page_table(current, next_copy):
+                current = self._merge_table_nodes(current, next_copy)
+                continue
+            merged.append(current)
+            current = next_copy
+        merged.append(current)
+        return merged
+
+    def _should_merge_cross_page_paragraph(self, current: DocumentNode, next_node: DocumentNode) -> bool:
+        if current.node_type != "paragraph" or next_node.node_type != "paragraph":
+            return False
+        if not self._is_adjacent_page(current, next_node):
+            return False
+        if current.source_meta.get("layout_role") != "body" or next_node.source_meta.get("layout_role") != "body":
+            return False
+        if not self._is_bottom_body_node(current) or not self._is_top_body_node(next_node):
+            return False
+        if self._ends_like_complete_paragraph(current.text):
+            return False
+        if self._looks_like_heading(next_node.text):
+            return False
+        if self.list_re.match(next_node.text.strip()):
+            return False
+        if "|" in next_node.text and next_node.text.count("|") >= 2:
+            return False
+        if not self._has_similar_horizontal_layout(current, next_node):
+            return False
+        if self._looks_like_special_page(current) or self._looks_like_special_page(next_node):
+            return False
+        return True
+
+    def _should_merge_cross_page_table(self, current: DocumentNode, next_node: DocumentNode) -> bool:
+        if current.node_type != "table" or next_node.node_type != "table":
+            return False
+        if not self._is_adjacent_page(current, next_node):
+            return False
+        if not self._is_bottom_body_node(current) or not self._is_top_body_node(next_node):
+            return False
+        current_cols = self._table_column_count(current.text)
+        next_cols = self._table_column_count(next_node.text)
+        if current_cols <= 0 or next_cols <= 0 or current_cols != next_cols:
+            return False
+        if self._looks_like_special_page(current) or self._looks_like_special_page(next_node):
+            return False
+        return True
+
+    def _merge_paragraph_nodes(self, current: DocumentNode, next_node: DocumentNode) -> DocumentNode:
+        merged = current.model_copy(deep=True)
+        merged.text = self._join_text(current.text, next_node.text)
+        merged.source_meta = dict(merged.source_meta)
+        merged.source_meta["bbox"] = self._union_bbox(
+            current.source_meta.get("bbox"),
+            next_node.source_meta.get("bbox"),
+        )
+        merged.source_meta["cross_page_merged"] = True
+        merged.source_meta["cross_page_merge_type"] = "paragraph"
+        merged.source_meta["source_pages"] = self._collect_source_pages(current, next_node)
+        return merged
+
+    def _merge_table_nodes(self, current: DocumentNode, next_node: DocumentNode) -> DocumentNode:
+        merged = current.model_copy(deep=True)
+        current_lines = [line.strip() for line in current.text.splitlines() if line.strip()]
+        next_lines = [line.strip() for line in next_node.text.splitlines() if line.strip()]
+        if current_lines and next_lines and current_lines[0] == next_lines[0]:
+            next_lines = next_lines[1:]
+        merged.text = "\n".join([*current_lines, *next_lines]).strip()
+        merged.source_meta = dict(merged.source_meta)
+        merged.source_meta["bbox"] = self._union_bbox(
+            current.source_meta.get("bbox"),
+            next_node.source_meta.get("bbox"),
+        )
+        merged.source_meta["cross_page_merged"] = True
+        merged.source_meta["cross_page_merge_type"] = "table"
+        merged.source_meta["source_pages"] = self._collect_source_pages(current, next_node)
+        return merged
+
+    def _collect_source_pages(self, current: DocumentNode, next_node: DocumentNode) -> list[int]:
+        pages: set[int] = set()
+        for node in (current, next_node):
+            if node.source_page is not None:
+                pages.add(node.source_page)
+            source_pages = node.source_meta.get("source_pages")
+            if isinstance(source_pages, list):
+                pages.update(page for page in source_pages if isinstance(page, int))
+        return sorted(pages)
+
+    def _is_adjacent_page(self, current: DocumentNode, next_node: DocumentNode) -> bool:
+        if current.source_page is None or next_node.source_page is None:
+            return False
+        return next_node.source_page == current.source_page + 1
+
+    def _is_bottom_body_node(self, node: DocumentNode) -> bool:
+        bbox = node.source_meta.get("bbox")
+        if not (isinstance(bbox, list) and len(bbox) == 4):
+            return False
+        return float(bbox[3]) >= 520.0
+
+    def _is_top_body_node(self, node: DocumentNode) -> bool:
+        bbox = node.source_meta.get("bbox")
+        if not (isinstance(bbox, list) and len(bbox) == 4):
+            return False
+        return float(bbox[1]) <= 160.0
+
+    def _has_similar_horizontal_layout(self, current: DocumentNode, next_node: DocumentNode) -> bool:
+        current_bbox = current.source_meta.get("bbox")
+        next_bbox = next_node.source_meta.get("bbox")
+        if not (isinstance(current_bbox, list) and isinstance(next_bbox, list) and len(current_bbox) == 4 and len(next_bbox) == 4):
+            return False
+        left_aligned = abs(float(current_bbox[0]) - float(next_bbox[0])) <= 24.0
+        width_similar = abs((float(current_bbox[2]) - float(current_bbox[0])) - (float(next_bbox[2]) - float(next_bbox[0]))) <= 64.0
+        return left_aligned or width_similar
+
+    def _looks_like_special_page(self, node: DocumentNode) -> bool:
+        text = node.text.strip()
+        if not text:
+            return False
+        if node.node_type == "title":
+            return True
+        if re.search(r"(目录|contents|appendix|附录|chapter\s+\d+)$", text, re.IGNORECASE):
+            return True
+        return False
+
+    def _table_column_count(self, text: str) -> int:
+        first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
+        if not first_line:
+            return 0
+        return len([part for part in first_line.split("|")])

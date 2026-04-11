@@ -33,8 +33,12 @@ class SemanticSegmenter:
             if node.node_type == "title":
                 flush_current()
                 level = max(node.level, 1)
-                heading_stack[:] = heading_stack[: level - 1]
-                heading_stack.append(node.text)
+                existing_path = node.source_meta.get("section_path")
+                if isinstance(existing_path, list) and existing_path:
+                    heading_stack[:] = [str(item) for item in existing_path]
+                else:
+                    heading_stack[:] = heading_stack[: level - 1]
+                    heading_stack.append(node.text)
 
                 title_node = node.model_copy(deep=True)
                 title_node.source_meta = dict(title_node.source_meta)
@@ -44,7 +48,11 @@ class SemanticSegmenter:
 
             node_with_path = node.model_copy(deep=True)
             node_with_path.source_meta = dict(node_with_path.source_meta)
-            node_with_path.source_meta["section_path"] = heading_stack.copy()
+            existing_path = node_with_path.source_meta.get("section_path")
+            if isinstance(existing_path, list) and existing_path:
+                node_with_path.source_meta["section_path"] = [str(item) for item in existing_path]
+            else:
+                node_with_path.source_meta["section_path"] = heading_stack.copy()
 
             if node.node_type == "table":
                 flush_current()

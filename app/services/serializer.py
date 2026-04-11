@@ -46,7 +46,7 @@ class ChunkSerializer:
             return None
 
         section_path = self._section_path(block)
-        page_no = sorted({node.source_page for node in block if node.source_page is not None})
+        page_no = self._page_numbers(block)
         chunk_type = self._chunk_type(block)
         return Chunk(
             chunk_id=str(uuid.uuid4()),
@@ -75,3 +75,13 @@ class ChunkSerializer:
         if "list" in node_types:
             return "list"
         return "mixed"
+
+    def _page_numbers(self, block: list[DocumentNode]) -> list[int]:
+        pages: set[int] = set()
+        for node in block:
+            if node.source_page is not None:
+                pages.add(node.source_page)
+            source_pages = node.source_meta.get("source_pages")
+            if isinstance(source_pages, list):
+                pages.update(page for page in source_pages if isinstance(page, int))
+        return sorted(pages)

@@ -14,6 +14,7 @@ from app.services.llm import LlmBoundaryRefiner
 from app.services.parser import DocParser, PdfParser, get_parser
 from app.services.pipeline import DocumentChunkPipeline
 from app.services.selection import RuntimeSelector
+from app.services.serializer import ChunkSerializer
 from app.services.token_counter import TokenCounter
 
 
@@ -281,6 +282,108 @@ def test_pdf_parser_removes_repeated_headers_and_footers() -> None:
     assert "Page 2" not in texts
     assert "Body content on page one." in texts
     assert "Body content on page two." in texts
+
+
+def test_pdf_parser_merges_cross_page_paragraph_when_sentence_continues() -> None:
+    parser = PdfParser()
+    nodes = [
+        DocumentNode(
+            node_id="p1",
+            node_type="paragraph",
+            text="This paragraph continues to the next page",
+            source_page=1,
+            source_meta={"bbox": [60.0, 700.0, 520.0, 760.0], "layout_role": "body"},
+        ),
+        DocumentNode(
+            node_id="p2",
+            node_type="paragraph",
+            text="with the remaining explanation.",
+            source_page=2,
+            source_meta={"bbox": [62.0, 40.0, 522.0, 110.0], "layout_role": "body"},
+        ),
+    ]
+
+    merged = parser._merge_cross_page_nodes(nodes)
+
+    assert len(merged) == 1
+    assert merged[0].node_id == "p1"
+    assert "next page with the remaining explanation." in merged[0].text
+    assert merged[0].source_meta["cross_page_merged"] is True
+    assert merged[0].source_meta["cross_page_merge_type"] == "paragraph"
+    assert merged[0].source_meta["source_pages"] == [1, 2]
+
+
+def test_pdf_parser_does_not_merge_cross_page_paragraph_when_sentence_is_complete() -> None:
+    parser = PdfParser()
+    nodes = [
+        DocumentNode(
+            node_id="p1",
+            node_type="paragraph",
+            text="This page already ends with a complete sentence.",
+            source_page=1,
+            source_meta={"bbox": [60.0, 700.0, 520.0, 760.0], "layout_role": "body"},
+        ),
+        DocumentNode(
+            node_id="p2",
+            node_type="paragraph",
+            text="This is a new paragraph on the next page.",
+            source_page=2,
+            source_meta={"bbox": [62.0, 40.0, 522.0, 110.0], "layout_role": "body"},
+        ),
+    ]
+
+    merged = parser._merge_cross_page_nodes(nodes)
+
+    assert len(merged) == 2
+    assert merged[0].text == "This page already ends with a complete sentence."
+    assert merged[1].text == "This is a new paragraph on the next page."
+
+
+def test_pdf_parser_merges_cross_page_table_and_deduplicates_header() -> None:
+    parser = PdfParser()
+    nodes = [
+        DocumentNode(
+            node_id="t1",
+            node_type="table",
+            text="Field | Value\nColor | Red",
+            source_page=1,
+            source_meta={"bbox": [40.0, 540.0, 530.0, 760.0], "layout_role": "table"},
+        ),
+        DocumentNode(
+            node_id="t2",
+            node_type="table",
+            text="Field | Value\nSize | Large",
+            source_page=2,
+            source_meta={"bbox": [42.0, 40.0, 532.0, 220.0], "layout_role": "table"},
+        ),
+    ]
+
+    merged = parser._merge_cross_page_nodes(nodes)
+
+    assert len(merged) == 1
+    assert merged[0].node_id == "t1"
+    assert merged[0].text == "Field | Value\nColor | Red\nSize | Large"
+    assert merged[0].source_meta["cross_page_merged"] is True
+    assert merged[0].source_meta["cross_page_merge_type"] == "table"
+    assert merged[0].source_meta["source_pages"] == [1, 2]
+
+
+def test_chunk_serializer_uses_cross_page_source_pages() -> None:
+    serializer = ChunkSerializer(TokenCounter())
+    block = [
+        DocumentNode(
+            node_id="merged-node",
+            node_type="paragraph",
+            text="Merged text across two pages.",
+            source_page=1,
+            source_meta={"source_pages": [1, 2], "cross_page_merged": True},
+        )
+    ]
+
+    chunk = serializer.serialize_chunk(block, 1)
+
+    assert chunk is not None
+    assert chunk.metadata.page_no == [1, 2]
 
 
 def test_boundary_engine_merges_when_similarity_is_high() -> None:
