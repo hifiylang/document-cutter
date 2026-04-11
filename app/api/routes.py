@@ -16,11 +16,14 @@ from app.models.schemas import (
     ChunkListResponse,
     ChunkOptions,
     ChunkStreamEvent,
+    DocumentTask,
     HealthResponse,
     StoredDocumentResponse,
+    TaskEvent,
 )
 from app.services.document_store import store
 from app.services.pipeline import DocumentChunkPipeline
+from app.services.task_executor import task_executor
 
 
 router = APIRouter()
@@ -28,6 +31,11 @@ pipeline = DocumentChunkPipeline()
 
 
 def _sse_payload(event: ChunkStreamEvent) -> str:
+    data = event.model_dump(mode="json", exclude_none=True)
+    return f"event: {event.event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _task_sse_payload(event: TaskEvent) -> str:
     data = event.model_dump(mode="json", exclude_none=True)
     return f"event: {event.event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
@@ -96,6 +104,52 @@ async def chunk_by_url(request: ChunkByUrlRequest) -> StoredDocumentResponse:
         return StoredDocumentResponse.model_validate(store.save(result))
     except Exception as exc:
         raise to_http_error(exc) from exc
+
+
+@router.post("/v1/tasks/by-upload", response_model=DocumentTask)
+async def submit_upload_task(
+    file: UploadFile = File(...),
+    target_chunk_tokens: int | None = Form(default=None),
+    min_chunk_tokens: int | None = Form(default=None),
+    max_chunk_tokens: int | None = Form(default=None),
+    overlap_ratio: float | None = Form(default=None),
+    overlap_tokens: int | None = Form(default=None),
+) -> DocumentTask:
+    payload = await file.read()
+    options = ChunkOptions(
+        target_chunk_tokens=settings.target_chunk_tokens if target_chunk_tokens is None else target_chunk_tokens,
+        min_chunk_tokens=settings.min_chunk_tokens if min_chunk_tokens is None else min_chunk_tokens,
+        max_chunk_tokens=settings.max_chunk_tokens if max_chunk_tokens is None else max_chunk_tokens,
+        overlap_ratio=settings.overlap_ratio if overlap_ratio is None else overlap_ratio,
+        overlap_tokens=settings.overlap_tokens if overlap_tokens is None else overlap_tokens,
+    )
+    return task_executor.submit_upload_task(payload, file.filename or "uploaded.txt", options)
+
+
+@router.post("/v1/tasks/by-url", response_model=DocumentTask)
+async def submit_url_task(request: ChunkByUrlRequest) -> DocumentTask:
+    return task_executor.submit_url_task(request.document_url, request.filename, request.options)
+
+
+@router.get("/v1/tasks/{task_id}", response_model=DocumentTask)
+def get_task(task_id: str) -> DocumentTask:
+    task = task_executor.get_task(task_id)
+    if task is None:
+        raise to_http_error(NotFoundError("task not found"))
+    return task
+
+
+@router.get("/v1/tasks/{task_id}/stream")
+def stream_task(task_id: str) -> StreamingResponse:
+    task = task_executor.get_task(task_id)
+    if task is None:
+        raise to_http_error(NotFoundError("task not found"))
+
+    def event_stream():
+        for event in task_executor.stream_task(task_id):
+            yield _task_sse_payload(event)
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @router.post("/v1/chunk/by-upload/stream")

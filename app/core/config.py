@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     request_timeout_seconds: float = Field(default=30.0, gt=0)
     rate_limit_requests: int = Field(default=10, ge=1)
     rate_limit_window_seconds: int = Field(default=60, ge=1)
+    task_workers: int = Field(default=4, ge=1)
+    task_queue_size: int = Field(default=100, ge=1)
+    task_retention_seconds: int = Field(default=3600, ge=60)
 
     # 切分预算配置
     target_chunk_tokens: int = Field(default=300, ge=50)

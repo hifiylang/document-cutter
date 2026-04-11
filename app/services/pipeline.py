@@ -75,10 +75,11 @@ class DocumentChunkPipeline:
         file_bytes: bytes,
         filename: str,
         options: ChunkOptions | None = None,
+        document_id: str | None = None,
     ) -> ChunkResponse:
         """从原始文件字节流直接完成解析、切分和序列化。"""
 
-        document_id = str(uuid.uuid4())
+        document_id = document_id or str(uuid.uuid4())
         options = options or ChunkOptions(
             target_chunk_tokens=settings.target_chunk_tokens,
             min_chunk_tokens=settings.min_chunk_tokens,
@@ -96,7 +97,13 @@ class DocumentChunkPipeline:
             chunks=chunks,
         )
 
-    def chunk_url(self, document_url: str, filename: str, options: ChunkOptions | None = None) -> ChunkResponse:
+    def chunk_url(
+        self,
+        document_url: str,
+        filename: str,
+        options: ChunkOptions | None = None,
+        document_id: str | None = None,
+    ) -> ChunkResponse:
         """先下载远程文档，再复用本地切分主链路。"""
 
         try:
@@ -105,7 +112,7 @@ class DocumentChunkPipeline:
             raise
         except Exception as exc:
             raise DownloadError(f"failed to download document from {document_url}") from exc
-        return self.chunk_bytes(content, filename, options)
+        return self.chunk_bytes(content, filename, options, document_id=document_id)
 
     def stream_chunks_bytes(
         self,

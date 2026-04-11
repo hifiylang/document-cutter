@@ -14,6 +14,7 @@ from app.core.config import settings
 from app.core.logging import configure_logging, request_id_var
 from app.core.metrics import REQUEST_COUNTER, REQUEST_DURATION, metrics_payload
 from app.core.rate_limit import InMemoryRateLimiter
+from app.services.task_executor import task_executor
 from app.storage import database
 
 
@@ -33,6 +34,13 @@ def startup() -> None:
     """应用启动时确保数据库与表结构可用。"""
 
     database.initialize()
+
+
+@app.on_event("shutdown")
+def shutdown() -> None:
+    """应用关闭时回收任务执行器。"""
+
+    task_executor.shutdown()
 
 
 @app.middleware("http")

@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 
 NodeType = Literal["title", "paragraph", "table", "list", "unknown"]
+TaskStatus = Literal["queued", "processing", "completed", "failed"]
 
 
 class DocumentNode(BaseModel):
@@ -140,3 +141,28 @@ class ChunkByUrlRequest(BaseModel):
     document_url: str
     filename: str
     options: ChunkOptions | None = None
+
+
+class DocumentTask(BaseModel):
+    """文档任务状态。"""
+
+    task_id: str
+    document_id: str
+    filename: str
+    status: TaskStatus
+    progress_message: str | None = None
+    error_message: str | None = None
+    created_at: float
+    updated_at: float
+
+
+class TaskEvent(BaseModel):
+    """任务级 SSE 事件。"""
+
+    event: Literal["task_queued", "task_processing", "task_completed", "task_failed"]
+    task_id: str
+    document_id: str
+    filename: str
+    status: TaskStatus
+    progress_message: str | None = None
+    error_message: str | None = None

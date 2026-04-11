@@ -14,6 +14,7 @@ from app.main import app, rate_limiter
 from app.models.schemas import DocumentNode
 from app.services.document_store import store
 from app.services.pipeline import DocumentChunkPipeline
+from app.services.task_executor import task_executor
 
 
 client = TestClient(app)
@@ -32,6 +33,7 @@ def build_xlsx_bytes() -> bytes:
 
 def reset_store() -> None:
     store.clear_all()
+    task_executor.clear()
     rate_limiter.reset()
 
 
@@ -320,3 +322,85 @@ def test_list_chunks_returns_preview_text_only() -> None:
     assert list_response.status_code == 200
     assert set(body.keys()) == {"document_id", "filename", "total_chunks", "page", "page_size", "items"}
     assert set(body["items"][0].keys()) == {"chunk_id", "preview_text", "section_path", "metadata"}
+
+
+def test_submit_upload_task_returns_task_identity() -> None:
+    reset_store()
+
+    response = client.post(
+        "/v1/tasks/by-upload",
+        files={"file": ("task.md", b"# Title\n\nTask body", "text/markdown")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body.keys()) >= {"task_id", "document_id", "status", "filename"}
+    assert body["filename"] == "task.md"
+    assert body["status"] in {"queued", "processing", "completed"}
+
+
+def test_task_status_eventually_completes_and_persists_document() -> None:
+    reset_store()
+
+    response = client.post(
+        "/v1/tasks/by-upload",
+        files={"file": ("task.md", b"# Title\n\nTask body", "text/markdown")},
+    )
+    task_id = response.json()["task_id"]
+
+    status_body = {}
+    for _ in range(20):
+        status_response = client.get(f"/v1/tasks/{task_id}")
+        assert status_response.status_code == 200
+        status_body = status_response.json()
+        if status_body["status"] == "completed":
+            break
+        time.sleep(0.1)
+
+    assert status_body["status"] == "completed"
+    document_response = client.get(f"/v1/documents/{status_body['document_id']}")
+    assert document_response.status_code == 200
+
+
+def test_task_status_marks_failure_when_pipeline_raises() -> None:
+    reset_store()
+    original = DocumentChunkPipeline.chunk_bytes
+
+    def broken(self: DocumentChunkPipeline, file_bytes: bytes, filename: str, options=None):
+        raise OcrRequiredError("ocr required for scanned or image-only document")
+
+    DocumentChunkPipeline.chunk_bytes = broken
+    response = client.post(
+        "/v1/tasks/by-upload",
+        files={"file": ("broken.pdf", b"%PDF-1.4", "application/pdf")},
+    )
+    task_id = response.json()["task_id"]
+
+    status_body = {}
+    for _ in range(20):
+        status_response = client.get(f"/v1/tasks/{task_id}")
+        status_body = status_response.json()
+        if status_body["status"] == "failed":
+            break
+        time.sleep(0.1)
+
+    DocumentChunkPipeline.chunk_bytes = original
+
+    assert status_body["status"] == "failed"
+    assert "ocr required" in (status_body["error_message"] or "")
+
+
+def test_task_stream_emits_processing_and_completed_events() -> None:
+    reset_store()
+    response = client.post(
+        "/v1/tasks/by-upload",
+        files={"file": ("stream.md", b"# Title\n\nTask stream body", "text/markdown")},
+    )
+    task_id = response.json()["task_id"]
+
+    with client.stream("GET", f"/v1/tasks/{task_id}/stream") as stream_response:
+        assert stream_response.status_code == 200
+        payload = "".join(chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk for chunk in stream_response.iter_text())
+
+    assert "event: task_processing" in payload or "event: task_queued" in payload
+    assert "event: task_completed" in payload
